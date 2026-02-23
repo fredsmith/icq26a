@@ -11,3 +11,4 @@ export const preferences = writable<AppPreferences>({
   homeserver: 'https://matrix.org',
   notification_sounds: true,
 })
+export const unreadCounts = writable<Record<string, number>>({})

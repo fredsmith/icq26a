@@ -9,6 +9,7 @@ use matrix_client::MatrixState;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(MatrixState::new())
         .invoke_handler(tauri::generate_handler![
             commands::matrix_login,
@@ -19,6 +20,7 @@ pub fn run() {
             commands::send_message,
             commands::set_presence,
             commands::start_sync,
+            commands::upload_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

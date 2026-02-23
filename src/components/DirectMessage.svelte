@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte'
   import { activeRoomId, rooms } from '../lib/stores'
   import { getRoomMessages, sendMessage } from '../lib/matrix'
+  import { invoke } from '@tauri-apps/api/core'
   import { listen } from '@tauri-apps/api/event'
   import type { Message } from '../lib/types'
 
@@ -60,6 +61,19 @@
     }
   }
 
+  async function handleAttach() {
+    if (!$activeRoomId) return
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      const file = await open({ multiple: false })
+      if (file) {
+        await invoke('upload_file', { roomId: $activeRoomId, filePath: file })
+      }
+    } catch (e) {
+      console.error('Failed to attach file:', e)
+    }
+  }
+
   function closeChat() {
     activeRoomId.set(null)
   }
@@ -111,6 +125,7 @@
     <!-- Buttons -->
     <div class="dm-buttons">
       <button onclick={closeChat}>Cancel</button>
+      <button onclick={handleAttach}>Attach</button>
       <button onclick={handleSend}>Send</button>
     </div>
   </div>

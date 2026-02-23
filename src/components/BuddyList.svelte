@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { buddyList, rooms, activeRoomId } from '../lib/stores'
+  import { listen } from '@tauri-apps/api/event'
+  import { buddyList, rooms, activeRoomId, unreadCounts } from '../lib/stores'
   import { getBuddyList, getRooms } from '../lib/matrix'
-  import type { Buddy } from '../lib/types'
+  import type { Buddy, Message } from '../lib/types'
   import StatusPicker from './StatusPicker.svelte'
 
   let activeTab = $state<'all' | 'users'>('all')
@@ -20,15 +21,35 @@
     } catch (e) {
       console.error('Failed to load buddy list:', e)
     }
+
+    await listen<{ room_id: string; message: Message }>('new_message', (event) => {
+      const roomId = event.payload.room_id
+      if (roomId !== $activeRoomId) {
+        unreadCounts.update(counts => ({
+          ...counts,
+          [roomId]: (counts[roomId] || 0) + 1,
+        }))
+      }
+    })
   })
 
   function openChat(roomId: string) {
     activeRoomId.set(roomId)
+    unreadCounts.update(counts => {
+      const { [roomId]: _, ...rest } = counts
+      return rest
+    })
   }
 
   function findRoomForBuddy(buddy: Buddy): string | null {
     const room = $rooms.find(r => r.is_direct && r.name === buddy.display_name)
     return room?.room_id ?? null
+  }
+
+  function getUnreadForBuddy(buddy: Buddy): number {
+    const room = $rooms.find(r => r.is_direct && r.name === buddy.display_name)
+    if (!room) return 0
+    return $unreadCounts[room.room_id] || 0
   }
 </script>
 
@@ -65,6 +86,9 @@
             }}>
               <span class="status-dot online"></span>
               {buddy.display_name}
+              {#if getUnreadForBuddy(buddy) > 0}
+                <span class="unread-badge">{getUnreadForBuddy(buddy)}</span>
+              {/if}
             </button>
           {/each}
         {/if}
@@ -77,6 +101,9 @@
             }}>
               <span class="status-dot"></span>
               {buddy.display_name}
+              {#if getUnreadForBuddy(buddy) > 0}
+                <span class="unread-badge">{getUnreadForBuddy(buddy)}</span>
+              {/if}
             </button>
           {/each}
         {/if}
@@ -88,6 +115,9 @@
         {#each filteredRooms as room}
           <button class="buddy-row" onclick={() => openChat(room.room_id)}>
             {room.name}
+            {#if $unreadCounts[room.room_id] > 0}
+              <span class="unread-badge">{$unreadCounts[room.room_id]}</span>
+            {/if}
           </button>
         {/each}
         {#if filteredRooms.length === 0}
@@ -168,6 +198,19 @@
     color: #888;
     padding: 20px;
     font-size: 11px;
+  }
+  .unread-badge {
+    margin-left: auto;
+    background: #ff0000;
+    color: white;
+    font-size: 9px;
+    font-weight: bold;
+    min-width: 14px;
+    height: 14px;
+    line-height: 14px;
+    text-align: center;
+    border-radius: 7px;
+    padding: 0 3px;
   }
   .buddy-toolbar {
     padding: 4px;

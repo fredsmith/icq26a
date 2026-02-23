@@ -223,3 +223,46 @@ pub async fn start_sync(
 
     Ok(())
 }
+
+#[tauri::command]
+pub async fn upload_file(
+    room_id: String,
+    file_path: String,
+    state: State<'_, MatrixState>,
+) -> Result<(), String> {
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let room_id = matrix_sdk::ruma::OwnedRoomId::try_from(room_id.as_str())
+        .map_err(|e| format!("Invalid room ID: {}", e))?;
+    let room = client.get_room(&room_id).ok_or("Room not found")?;
+
+    let data = std::fs::read(&file_path)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+
+    let filename = std::path::Path::new(&file_path)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    let mime = mime_guess::from_path(&file_path).first_or_octet_stream();
+
+    let response = client
+        .media()
+        .upload(&mime, data)
+        .await
+        .map_err(|e| format!("Upload failed: {}", e))?;
+
+    let content = matrix_sdk::ruma::events::room::message::RoomMessageEventContent::new(
+        matrix_sdk::ruma::events::room::message::MessageType::File(
+            matrix_sdk::ruma::events::room::message::FileMessageEventContent::plain(
+                filename,
+                response.content_uri,
+            ),
+        ),
+    );
+    room.send(content).await.map_err(|e| format!("Send failed: {}", e))?;
+
+    Ok(())
+}
