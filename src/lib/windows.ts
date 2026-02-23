@@ -52,6 +52,16 @@ export function openDirectMessageWindow(roomId: string, roomName: string) {
   })
 }
 
+export function openServerLogWindow() {
+  openChildWindow({
+    label: 'serverlog',
+    url: '/?window=serverlog',
+    title: 'Server Log',
+    width: 560,
+    height: 400,
+  })
+}
+
 export function openChatRoomWindow(roomId: string, roomName: string) {
   openChildWindow({
     label: `chatroom-${sanitizeLabel(roomId)}`,

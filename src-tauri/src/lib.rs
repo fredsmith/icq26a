@@ -14,6 +14,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::matrix_login,
             commands::matrix_logout,
+            commands::try_restore_session,
             commands::get_buddy_list,
             commands::get_room_members,
             commands::get_rooms,
@@ -22,6 +23,10 @@ pub fn run() {
             commands::set_presence,
             commands::start_sync,
             commands::upload_file,
+            commands::get_server_log,
+            commands::accept_verification,
+            commands::confirm_verification,
+            commands::cancel_verification,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

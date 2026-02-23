@@ -19,6 +19,9 @@ const windowType = params.get('window')
       roomId: params.get('roomId') ?? '',
       roomName: params.get('roomName') ?? 'Unknown',
     }
+  } else if (windowType === 'serverlog') {
+    const mod = await import('./components/ServerLog.svelte')
+    component = mod.default
   } else if (windowType === 'chatroom') {
     const mod = await import('./components/ChatRoom.svelte')
     component = mod.default

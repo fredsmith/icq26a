@@ -43,3 +43,26 @@ export interface AppPreferences {
   homeserver: string
   notification_sounds: boolean
 }
+
+export interface LogEntry {
+  timestamp: number
+  level: string
+  message: string
+}
+
+export interface VerificationEmoji {
+  symbol: string
+  description: string
+}
+
+export interface VerificationRequestEvent {
+  flow_id: string
+  user_id: string
+  is_self_verification: boolean
+}
+
+export interface VerificationEmojisEvent {
+  flow_id: string
+  user_id: string
+  emojis: VerificationEmoji[]
+}

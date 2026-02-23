@@ -6,7 +6,7 @@
   import type { Buddy, Message } from '../lib/types'
   import StatusPicker from './StatusPicker.svelte'
   import TitleBar from './TitleBar.svelte'
-  import { openPreferencesWindow, openDirectMessageWindow, openChatRoomWindow } from '../lib/windows'
+  import { openPreferencesWindow, openDirectMessageWindow, openChatRoomWindow, openServerLogWindow } from '../lib/windows'
 
   const onlineBuddies = $derived($buddyList.filter(b => b.presence !== 'offline'))
   const offlineBuddies = $derived($buddyList.filter(b => b.presence === 'offline'))
@@ -115,6 +115,7 @@
   <div class="buddy-toolbar">
     <StatusPicker />
     <button onclick={openPreferencesWindow}>Prefs</button>
+    <button onclick={openServerLogWindow}>Log</button>
   </div>
 </div>
 
