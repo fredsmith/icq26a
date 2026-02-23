@@ -1,4 +1,4 @@
-# ICQ26a
+# <img src="ref/Logo.png" width="32" height="32" alt="ICQ26a logo" /> ICQ26a
 
 A Matrix chat client with the look and feel of ICQ 98a, built with Tauri, Svelte 5, and Rust.
 
