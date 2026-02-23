@@ -250,7 +250,7 @@ pub async fn upload_file(
 
     let response = client
         .media()
-        .upload(&mime, data)
+        .upload(&mime, data, None)
         .await
         .map_err(|e| format!("Upload failed: {}", e))?;
 
