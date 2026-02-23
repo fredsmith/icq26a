@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core'
+  import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
   import { matrixLogin } from '../lib/matrix'
   import { isLoggedIn, currentUserId, preferences } from '../lib/stores'
   import type { LoginCredentials } from '../lib/types'
@@ -28,6 +29,7 @@
       const userId = await matrixLogin(credentials)
       currentUserId.set(userId)
       isLoggedIn.set(true)
+      await getCurrentWindow().setSize(new LogicalSize(300, 480))
       await invoke('start_sync')
     } catch (e) {
       error = String(e)
@@ -77,7 +79,7 @@
 <style>
   .login-window {
     width: 280px;
-    margin: 80px auto;
+    margin: 20px auto;
   }
   .error-text {
     color: red;

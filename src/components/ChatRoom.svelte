@@ -79,13 +79,6 @@
 <div class="window chat-window">
   <TitleBar title="ICQ Chat - {roomName}" onclose={closeWindow} />
 
-  <!-- Menu bar -->
-  <div class="menu-bar">
-    <button>File</button>
-    <button>Edit</button>
-    <button>Display</button>
-  </div>
-
   <div class="window-body chat-body">
     <div class="chat-main">
       <!-- Messages pane -->
@@ -138,24 +131,6 @@
     flex-direction: column;
     height: 100vh;
     box-sizing: border-box;
-  }
-  .menu-bar {
-    display: flex;
-    gap: 0;
-    padding: 2px 4px;
-    background: #c0c0c0;
-    border-bottom: 1px solid #808080;
-  }
-  .menu-bar button {
-    border: none;
-    background: transparent;
-    padding: 2px 8px;
-    font-size: 11px;
-    cursor: pointer;
-  }
-  .menu-bar button:hover {
-    background: #000080;
-    color: white;
   }
   .chat-body {
     flex: 1;

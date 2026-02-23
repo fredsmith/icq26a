@@ -3,9 +3,14 @@
   import { setPresence } from '../lib/matrix'
   import type { PresenceStatus } from '../lib/types'
 
+  interface Props {
+    presenceAvailable?: boolean
+  }
+  let { presenceAvailable = true }: Props = $props()
+
   let menuOpen = $state(false)
 
-  const statuses: { value: PresenceStatus; label: string; color: string }[] = [
+  const allStatuses: { value: PresenceStatus; label: string; color: string }[] = [
     { value: 'online', label: 'Online', color: '#00cc00' },
     { value: 'free_for_chat', label: 'Free For Chat', color: '#00cc00' },
     { value: 'away', label: 'Away', color: '#cccc00' },
@@ -15,6 +20,13 @@
     { value: 'invisible', label: 'Privacy (Invisible)', color: '#999999' },
     { value: 'offline', label: 'Offline/Disconnect', color: '#999999' },
   ]
+
+  const simpleStatuses: { value: PresenceStatus; label: string; color: string }[] = [
+    { value: 'online', label: 'Online', color: '#00cc00' },
+    { value: 'offline', label: 'Offline/Disconnect', color: '#999999' },
+  ]
+
+  const statuses = $derived(presenceAvailable ? allStatuses : simpleStatuses)
 
   async function selectStatus(status: PresenceStatus) {
     currentStatus.set(status)

@@ -37,7 +37,7 @@ export function openPreferencesWindow() {
     url: '/?window=preferences',
     title: 'Preferences',
     width: 380,
-    height: 320,
+    height: 220,
     parent: 'main',
   })
 }

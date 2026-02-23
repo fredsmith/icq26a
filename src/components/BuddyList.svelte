@@ -1,14 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { listen } from '@tauri-apps/api/event'
-  import { buddyList, rooms, unreadCounts } from '../lib/stores'
-  import { getBuddyList, getRooms } from '../lib/matrix'
+  import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
+  import { buddyList, rooms, unreadCounts, isLoggedIn, currentUserId } from '../lib/stores'
+  import { getBuddyList, getRooms, matrixLogout } from '../lib/matrix'
   import type { Buddy, Message } from '../lib/types'
   import StatusPicker from './StatusPicker.svelte'
   import TitleBar from './TitleBar.svelte'
   import { openPreferencesWindow, openDirectMessageWindow, openChatRoomWindow, openServerLogWindow } from '../lib/windows'
 
-  const onlineBuddies = $derived($buddyList.filter(b => b.presence !== 'offline'))
+  const presenceAvailable = $derived($buddyList.some(b => b.presence !== 'unknown'))
+  const onlineBuddies = $derived($buddyList.filter(b => b.presence !== 'offline' && b.presence !== 'unknown'))
   const offlineBuddies = $derived($buddyList.filter(b => b.presence === 'offline'))
   const groupRooms = $derived($rooms.filter(r => !r.is_direct))
 
@@ -64,29 +66,55 @@
     if (!room) return 0
     return $unreadCounts[room.room_id] || 0
   }
+
+  async function handleLogout() {
+    try {
+      await matrixLogout()
+    } catch (e) {
+      console.error('Logout failed:', e)
+    }
+    buddyList.set([])
+    rooms.set([])
+    unreadCounts.set({})
+    currentUserId.set(null)
+    isLoggedIn.set(false)
+    await getCurrentWindow().setSize(new LogicalSize(300, 320))
+  }
 </script>
 
 <div class="window buddy-list-window">
   <TitleBar title="ICQ26a" showMinimize />
   <div class="window-body">
     <div class="buddy-scroll">
-      {#if onlineBuddies.length > 0}
-        <div class="group-header">Online</div>
-        {#each onlineBuddies as buddy}
+      {#if presenceAvailable}
+        {#if onlineBuddies.length > 0}
+          <div class="group-header">Online</div>
+          {#each onlineBuddies as buddy}
+            <button class="buddy-row" onclick={() => openBuddyChat(buddy)}>
+              <span class="status-dot online"></span>
+              {buddy.display_name}
+              {#if getUnreadForBuddy(buddy) > 0}
+                <span class="unread-badge">{getUnreadForBuddy(buddy)}</span>
+              {/if}
+            </button>
+          {/each}
+        {/if}
+        {#if offlineBuddies.length > 0}
+          <div class="group-header">Offline</div>
+          {#each offlineBuddies as buddy}
+            <button class="buddy-row offline" onclick={() => openBuddyChat(buddy)}>
+              <span class="status-dot"></span>
+              {buddy.display_name}
+              {#if getUnreadForBuddy(buddy) > 0}
+                <span class="unread-badge">{getUnreadForBuddy(buddy)}</span>
+              {/if}
+            </button>
+          {/each}
+        {/if}
+      {:else}
+        {#each $buddyList as buddy}
           <button class="buddy-row" onclick={() => openBuddyChat(buddy)}>
             <span class="status-dot online"></span>
-            {buddy.display_name}
-            {#if getUnreadForBuddy(buddy) > 0}
-              <span class="unread-badge">{getUnreadForBuddy(buddy)}</span>
-            {/if}
-          </button>
-        {/each}
-      {/if}
-      {#if offlineBuddies.length > 0}
-        <div class="group-header">Offline</div>
-        {#each offlineBuddies as buddy}
-          <button class="buddy-row offline" onclick={() => openBuddyChat(buddy)}>
-            <span class="status-dot"></span>
             {buddy.display_name}
             {#if getUnreadForBuddy(buddy) > 0}
               <span class="unread-badge">{getUnreadForBuddy(buddy)}</span>
@@ -113,9 +141,10 @@
 
   <!-- Bottom toolbar -->
   <div class="buddy-toolbar">
-    <StatusPicker />
+    <StatusPicker {presenceAvailable} />
     <button onclick={openPreferencesWindow}>Prefs</button>
     <button onclick={openServerLogWindow}>Log</button>
+    <button onclick={handleLogout}>Logout</button>
   </div>
 </div>
 

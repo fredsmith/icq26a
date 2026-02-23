@@ -281,15 +281,13 @@ pub async fn get_buddy_list(
                         match fetch_user_presence(client, member.user_id()).await {
                             Some(p) => p,
                             None => {
-                                if presence_supported {
-                                    slog(&app, &log, "warn", "Presence not supported by server, skipping remaining".into());
-                                }
+                                slog(&app, &log, "warn", "Presence not supported by server, skipping remaining".into());
                                 presence_supported = false;
-                                "offline".to_string()
+                                "unknown".to_string()
                             }
                         }
                     } else {
-                        "offline".to_string()
+                        "unknown".to_string()
                     };
                     buddies.push(Buddy {
                         user_id: user_id.clone(),
