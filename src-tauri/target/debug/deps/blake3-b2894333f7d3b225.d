@@ -1,0 +1,12 @@
+/Users/fsmith/src/github.com/fredsmith/icq26a/.worktrees/icq26a-mvp/src-tauri/target/debug/deps/blake3-b2894333f7d3b225.d: /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/lib.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/guts.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/hazmat.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/platform.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/ffi_neon.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/portable.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/io.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/join.rs
+
+/Users/fsmith/src/github.com/fredsmith/icq26a/.worktrees/icq26a-mvp/src-tauri/target/debug/deps/libblake3-b2894333f7d3b225.rmeta: /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/lib.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/guts.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/hazmat.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/platform.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/ffi_neon.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/portable.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/io.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/join.rs
+
+/Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/lib.rs:
+/Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/guts.rs:
+/Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/hazmat.rs:
+/Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/platform.rs:
+/Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/ffi_neon.rs:
+/Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/portable.rs:
+/Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/io.rs:
+/Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake3-1.8.3/src/join.rs:

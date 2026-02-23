@@ -1,0 +1,10 @@
+/Users/fsmith/src/github.com/fredsmith/icq26a/.worktrees/icq26a-mvp/src-tauri/target/debug/deps/serde_bytes-223ac0e5cec7b119.d: /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/lib.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/bytearray.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/bytes.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/de.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/ser.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/bytebuf.rs
+
+/Users/fsmith/src/github.com/fredsmith/icq26a/.worktrees/icq26a-mvp/src-tauri/target/debug/deps/libserde_bytes-223ac0e5cec7b119.rmeta: /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/lib.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/bytearray.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/bytes.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/de.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/ser.rs /Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/bytebuf.rs
+
+/Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/lib.rs:
+/Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/bytearray.rs:
+/Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/bytes.rs:
+/Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/de.rs:
+/Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/ser.rs:
+/Users/fsmith/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_bytes-0.11.19/src/bytebuf.rs:
