@@ -1,8 +1,12 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Buddy, Room, Message, LoginCredentials, LogEntry } from './types'
+import type { Buddy, Room, Message, LoginCredentials, LogEntry, UserProfile, RoomProfile } from './types'
 
 export async function matrixLogin(credentials: LoginCredentials): Promise<string> {
   return invoke('matrix_login', { credentials })
+}
+
+export async function matrixRegister(credentials: LoginCredentials): Promise<string> {
+  return invoke('matrix_register', { credentials })
 }
 
 export async function matrixLogout(): Promise<void> {
@@ -55,4 +59,36 @@ export async function cancelVerification(userId: string, flowId: string): Promis
 
 export async function getServerLog(): Promise<LogEntry[]> {
   return invoke('get_server_log')
+}
+
+export async function getUserProfile(userId: string): Promise<UserProfile> {
+  return invoke('get_user_profile', { userId })
+}
+
+export async function getRoomInfo(roomId: string): Promise<RoomProfile> {
+  return invoke('get_room_info', { roomId })
+}
+
+export async function createDmRoom(userId: string): Promise<Room> {
+  return invoke('create_dm_room', { userId })
+}
+
+export async function searchUsers(query: string): Promise<Buddy[]> {
+  return invoke('search_users', { query })
+}
+
+export async function joinRoom(roomIdOrAlias: string): Promise<Room> {
+  return invoke('join_room', { roomIdOrAlias })
+}
+
+export async function createRoom(roomAlias: string): Promise<Room> {
+  return invoke('create_room', { roomAlias })
+}
+
+export async function leaveRoom(roomId: string): Promise<void> {
+  return invoke('leave_room', { roomId })
+}
+
+export async function removeBuddy(userId: string): Promise<void> {
+  return invoke('remove_buddy', { userId })
 }

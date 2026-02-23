@@ -2,12 +2,12 @@
   import { onMount } from 'svelte'
   import { listen } from '@tauri-apps/api/event'
   import { buddyList, rooms, unreadCounts, isLoggedIn, currentUserId, currentStatus } from '../lib/stores'
-  import { getBuddyList, getRooms, matrixLogout, matrixDisconnect, tryRestoreSession } from '../lib/matrix'
+  import { getBuddyList, getRooms, matrixLogout, matrixDisconnect, tryRestoreSession, leaveRoom, removeBuddy } from '../lib/matrix'
   import { invoke } from '@tauri-apps/api/core'
   import type { Buddy, Message } from '../lib/types'
   import StatusPicker from './StatusPicker.svelte'
   import TitleBar from './TitleBar.svelte'
-  import { openPreferencesWindow, openDirectMessageWindow, openChatRoomWindow, openServerLogWindow } from '../lib/windows'
+  import { openPreferencesWindow, openDirectMessageWindow, openChatRoomWindow, openServerLogWindow, openUserInfoWindow, openRoomInfoWindow, openFindUserWindow, openJoinRoomWindow } from '../lib/windows'
 
   const isOffline = $derived($currentStatus === 'offline')
   const presenceAvailable = $derived($buddyList.some(b => b.presence !== 'unknown'))
@@ -93,6 +93,67 @@
     }
   }
 
+  let contextMenu = $state<{ x: number; y: number; buddy?: Buddy; room?: { room_id: string; name: string } } | null>(null)
+
+  function handleBuddyContext(e: MouseEvent, buddy: Buddy) {
+    e.preventDefault()
+    contextMenu = { x: e.clientX, y: e.clientY, buddy }
+  }
+
+  function handleRoomContext(e: MouseEvent, room: { room_id: string; name: string }) {
+    e.preventDefault()
+    contextMenu = { x: e.clientX, y: e.clientY, room }
+  }
+
+  function closeContextMenu() {
+    contextMenu = null
+  }
+
+  function handleContextMessage() {
+    if (contextMenu?.buddy) {
+      openBuddyChat(contextMenu.buddy)
+    }
+    contextMenu = null
+  }
+
+  function handleContextUserInfo() {
+    if (contextMenu?.buddy) {
+      openUserInfoWindow(contextMenu.buddy.user_id, contextMenu.buddy.display_name)
+    }
+    contextMenu = null
+  }
+
+  function handleContextRoomInfo() {
+    if (contextMenu?.room) {
+      openRoomInfoWindow(contextMenu.room.room_id, contextMenu.room.name)
+    }
+    contextMenu = null
+  }
+
+  async function handleContextRemoveBuddy() {
+    if (!contextMenu?.buddy) return
+    const buddy = contextMenu.buddy
+    contextMenu = null
+    try {
+      await removeBuddy(buddy.user_id)
+      await refreshLists()
+    } catch (e) {
+      console.error('Remove buddy failed:', e)
+    }
+  }
+
+  async function handleContextLeaveRoom() {
+    if (!contextMenu?.room) return
+    const room = contextMenu.room
+    contextMenu = null
+    try {
+      await leaveRoom(room.room_id)
+      await refreshLists()
+    } catch (e) {
+      console.error('Leave room failed:', e)
+    }
+  }
+
   async function handleLogout() {
     try {
       await matrixLogout()
@@ -111,12 +172,16 @@
 <div class="window buddy-list-window">
   <TitleBar title="ICQ26a" showMinimize />
   <div class="window-body">
+    <div class="buddy-actions">
+      <button onclick={openFindUserWindow}>Find Users</button>
+      <button onclick={openJoinRoomWindow}>Join Room</button>
+    </div>
     <div class="buddy-scroll" class:disconnected={isOffline}>
       {#if presenceAvailable}
         {#if onlineBuddies.length > 0}
           <div class="group-header">Online</div>
           {#each onlineBuddies as buddy}
-            <button class="buddy-row" onclick={() => openBuddyChat(buddy)}>
+            <button class="buddy-row" onclick={() => openBuddyChat(buddy)} oncontextmenu={(e: MouseEvent) => handleBuddyContext(e, buddy)}>
               <span class="status-dot online"></span>
               {buddy.display_name}
               {#if getUnreadForBuddy(buddy) > 0}
@@ -128,7 +193,7 @@
         {#if offlineBuddies.length > 0}
           <div class="group-header">Offline</div>
           {#each offlineBuddies as buddy}
-            <button class="buddy-row offline" onclick={() => openBuddyChat(buddy)}>
+            <button class="buddy-row offline" onclick={() => openBuddyChat(buddy)} oncontextmenu={(e: MouseEvent) => handleBuddyContext(e, buddy)}>
               <span class="status-dot"></span>
               {buddy.display_name}
               {#if getUnreadForBuddy(buddy) > 0}
@@ -139,7 +204,7 @@
         {/if}
       {:else}
         {#each $buddyList as buddy}
-          <button class="buddy-row" onclick={() => openBuddyChat(buddy)}>
+          <button class="buddy-row" onclick={() => openBuddyChat(buddy)} oncontextmenu={(e: MouseEvent) => handleBuddyContext(e, buddy)}>
             <span class="status-dot online"></span>
             {buddy.display_name}
             {#if getUnreadForBuddy(buddy) > 0}
@@ -151,7 +216,7 @@
       {#if groupRooms.length > 0}
         <div class="group-header">Rooms</div>
         {#each groupRooms as room}
-          <button class="buddy-row" onclick={() => openRoomChat(room)}>
+          <button class="buddy-row" onclick={() => openRoomChat(room)} oncontextmenu={(e: MouseEvent) => handleRoomContext(e, room)}>
             {room.name}
             {#if $unreadCounts[room.room_id] > 0}
               <span class="unread-badge">{$unreadCounts[room.room_id]}</span>
@@ -164,6 +229,24 @@
       {/if}
     </div>
   </div>
+
+  <!-- Context menu -->
+  {#if contextMenu}
+    <div class="context-overlay" onclick={closeContextMenu} onkeydown={(e: KeyboardEvent) => { if (e.key === 'Escape') closeContextMenu() }} role="presentation">
+    </div>
+    <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px;">
+      {#if contextMenu.buddy}
+        <button class="context-item" onclick={handleContextMessage}>Message</button>
+        <button class="context-item" onclick={handleContextUserInfo}>User Info</button>
+        <div class="context-separator"></div>
+        <button class="context-item danger" onclick={handleContextRemoveBuddy}>Remove</button>
+      {:else if contextMenu.room}
+        <button class="context-item" onclick={handleContextRoomInfo}>Room Info</button>
+        <div class="context-separator"></div>
+        <button class="context-item danger" onclick={handleContextLeaveRoom}>Leave Room</button>
+      {/if}
+    </div>
+  {/if}
 
   <!-- Bottom toolbar -->
   <div class="buddy-toolbar">
@@ -186,6 +269,13 @@
     flex-direction: column;
     overflow: hidden;
     padding: 0;
+  }
+  .buddy-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 4px;
+    padding: 3px 4px;
+    border-bottom: 1px solid #808080;
   }
   .buddy-scroll {
     flex: 1;
@@ -251,6 +341,48 @@
     text-align: center;
     border-radius: 7px;
     padding: 0 3px;
+  }
+  .context-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 99;
+  }
+  .context-menu {
+    position: fixed;
+    z-index: 100;
+    background: #c0c0c0;
+    border: 2px outset #c0c0c0;
+    padding: 2px;
+    min-width: 100px;
+  }
+  .context-item {
+    display: block;
+    width: 100%;
+    border: none;
+    background: transparent;
+    padding: 2px 16px;
+    text-align: left;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .context-item:hover {
+    background: #000080;
+    color: white;
+  }
+  .context-item.danger {
+    color: #cc0000;
+  }
+  .context-item.danger:hover {
+    background: #cc0000;
+    color: white;
+  }
+  .context-separator {
+    height: 1px;
+    background: #808080;
+    margin: 2px 4px;
   }
   .buddy-toolbar {
     display: flex;

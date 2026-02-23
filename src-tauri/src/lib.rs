@@ -13,6 +13,7 @@ pub fn run() {
         .manage(MatrixState::new())
         .invoke_handler(tauri::generate_handler![
             commands::matrix_login,
+            commands::matrix_register,
             commands::matrix_logout,
             commands::matrix_disconnect,
             commands::try_restore_session,
@@ -28,6 +29,14 @@ pub fn run() {
             commands::accept_verification,
             commands::confirm_verification,
             commands::cancel_verification,
+            commands::get_user_profile,
+            commands::get_room_info,
+            commands::create_dm_room,
+            commands::search_users,
+            commands::join_room,
+            commands::create_room,
+            commands::leave_room,
+            commands::remove_buddy,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

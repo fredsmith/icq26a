@@ -2,19 +2,24 @@
 
 A Matrix chat client with the look and feel of ICQ 98a, built with Tauri, Svelte 5, and Rust.
 
-![Buddy List](ref/buddy%20list.png)
-![Direct Message](ref/direct%20message%20and%20status%20picker.png)
-![Chat Room](ref/Chat.png)
+![Login](ref/login.png)
+![Buddy List & Join Room](ref/add_users.png)
+![Conversations](ref/conversations.png)
 
 ## Features
 
 - **Buddy list** with online/offline grouping and presence indicators
 - **Direct messages** and **multi-user chat rooms**
+- **User search** via Matrix user directory and direct user ID entry
+- **Join or create rooms** by alias or room ID
+- **Registration** — sign up for a new account in-app (with UIAA dummy-auth support)
 - **File uploads and downloads** via Matrix media API
 - **Session persistence** — login once, sessions restore on relaunch
 - **SAS emoji verification** for cross-signing trust
 - **Notification sounds** and unread message badges
 - **Status picker** — Online, Away, Do Not Disturb, and more
+- **User info** and **room info** panels
+- **Right-click context menus** — message, view info, remove buddy, leave room
 - **Server log** debug window for visibility into backend operations
 - **Windows 95 aesthetic** via [98.css](https://jdan.github.io/98.css/)
 
@@ -43,7 +48,7 @@ Produces platform-native installers in `src-tauri/target/release/bundle/`.
 
 ## Configuration
 
-On first launch, the app connects to `matrix.org` by default. Open **Prefs** from the buddy list toolbar to change the homeserver URL before logging in.
+On first launch, the app connects to `matrix.org` by default. Open **Settings** from the buddy list toolbar to change the homeserver URL before logging in.
 
 Session data is stored in:
 - **macOS**: `~/Library/Application Support/icq26a/`

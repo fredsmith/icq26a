@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core'
-  import { matrixLogin } from '../lib/matrix'
+  import { matrixLogin, matrixRegister } from '../lib/matrix'
   import { isLoggedIn, currentUserId, preferences } from '../lib/stores'
   import type { LoginCredentials } from '../lib/types'
   import TitleBar from './TitleBar.svelte'
@@ -8,17 +8,25 @@
 
   let username = $state('')
   let password = $state('')
+  let confirmPassword = $state('')
   let homeserver = $state('')
   let error = $state('')
   let loading = $state(false)
+  let mode: 'login' | 'register' = $state('login')
 
   $effect(() => {
     const p = $preferences
     if (!homeserver) homeserver = p.homeserver
   })
 
-  async function handleLogin() {
+  async function handleSubmit() {
     error = ''
+
+    if (mode === 'register' && password !== confirmPassword) {
+      error = 'Passwords do not match'
+      return
+    }
+
     loading = true
     try {
       const credentials: LoginCredentials = {
@@ -26,7 +34,9 @@
         username,
         password,
       }
-      const userId = await matrixLogin(credentials)
+      const userId = mode === 'register'
+        ? await matrixRegister(credentials)
+        : await matrixLogin(credentials)
       currentUserId.set(userId)
       isLoggedIn.set(true)
       await invoke('start_sync')
@@ -36,10 +46,16 @@
       loading = false
     }
   }
+
+  function toggleMode() {
+    mode = mode === 'login' ? 'register' : 'login'
+    error = ''
+    confirmPassword = ''
+  }
 </script>
 
 <div class="window login-window">
-  <TitleBar title="ICQ26a Login" showMinimize />
+  <TitleBar title={mode === 'register' ? 'ICQ26a Register' : 'ICQ26a Login'} showMinimize />
   <div class="window-body">
     <div class="login-content">
       <div class="login-logo">
@@ -47,7 +63,7 @@
         <p class="logo-text">ICQ26a</p>
       </div>
 
-      <form onsubmit={(e) => { e.preventDefault(); handleLogin() }}>
+      <form onsubmit={(e) => { e.preventDefault(); handleSubmit() }}>
         <div class="field-row-stacked" style="width: 200px;">
           <label for="homeserver">Homeserver:</label>
           <input id="homeserver" type="text" bind:value={homeserver} placeholder="https://matrix.org" />
@@ -61,16 +77,31 @@
           <input id="password" type="password" bind:value={password} />
         </div>
 
+        {#if mode === 'register'}
+          <div class="field-row-stacked" style="width: 200px;">
+            <label for="confirm-password">Confirm Password:</label>
+            <input id="confirm-password" type="password" bind:value={confirmPassword} />
+          </div>
+        {/if}
+
         {#if error}
           <p class="error-text">{error}</p>
         {/if}
 
         <div class="field-row" style="justify-content: flex-end; margin-top: 8px;">
           <button type="submit" disabled={loading}>
-            {loading ? 'Connecting...' : 'Login'}
+            {loading ? 'Connecting...' : mode === 'register' ? 'Register' : 'Login'}
           </button>
         </div>
       </form>
+
+      <p class="toggle-text">
+        {#if mode === 'login'}
+          Don't have an account? <button class="link-btn" onclick={toggleMode}>Register</button>
+        {:else}
+          Already have an account? <button class="link-btn" onclick={toggleMode}>Log in</button>
+        {/if}
+      </p>
     </div>
   </div>
 
@@ -121,6 +152,19 @@
     color: red;
     font-size: 11px;
     margin: 4px 0;
+  }
+  .toggle-text {
+    font-size: 11px;
+    margin-top: 8px;
+  }
+  .link-btn {
+    background: none;
+    border: none;
+    color: #0000ee;
+    text-decoration: underline;
+    cursor: pointer;
+    padding: 0;
+    font-size: 11px;
   }
   .login-toolbar {
     display: flex;

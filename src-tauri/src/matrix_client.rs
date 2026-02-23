@@ -109,6 +109,31 @@ impl ServerLog {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SharedRoom {
+    pub room_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserProfile {
+    pub user_id: String,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+    pub presence: String,
+    pub last_seen_ago: Option<u64>,
+    pub shared_rooms: Vec<SharedRoom>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoomProfile {
+    pub room_id: String,
+    pub name: String,
+    pub topic: Option<String>,
+    pub is_direct: bool,
+    pub member_count: u64,
+}
+
 pub fn data_dir() -> Result<PathBuf, String> {
     let base = dirs::data_dir().ok_or("Could not determine data directory")?;
     Ok(base.join("icq26a"))

@@ -7,6 +7,7 @@ interface ChildWindowOptions {
   width: number
   height: number
   parent?: string
+  resizable?: boolean
 }
 
 export async function openChildWindow(opts: ChildWindowOptions) {
@@ -24,6 +25,7 @@ export async function openChildWindow(opts: ChildWindowOptions) {
     decorations: false,
     center: true,
     parent: opts.parent,
+    resizable: opts.resizable,
   })
 }
 
@@ -62,6 +64,26 @@ export function openServerLogWindow() {
   })
 }
 
+export function openUserInfoWindow(userId: string, displayName: string) {
+  openChildWindow({
+    label: `userinfo-${sanitizeLabel(userId)}`,
+    url: `/?window=userinfo&userId=${encodeURIComponent(userId)}&displayName=${encodeURIComponent(displayName)}`,
+    title: `User Info - ${displayName}`,
+    width: 300,
+    height: 340,
+  })
+}
+
+export function openRoomInfoWindow(roomId: string, roomName: string) {
+  openChildWindow({
+    label: `roominfo-${sanitizeLabel(roomId)}`,
+    url: `/?window=roominfo&roomId=${encodeURIComponent(roomId)}&roomName=${encodeURIComponent(roomName)}`,
+    title: `Room Info - ${roomName}`,
+    width: 300,
+    height: 340,
+  })
+}
+
 export function openChatRoomWindow(roomId: string, roomName: string) {
   openChildWindow({
     label: `chatroom-${sanitizeLabel(roomId)}`,
@@ -69,5 +91,27 @@ export function openChatRoomWindow(roomId: string, roomName: string) {
     title: `ICQ Chat - ${roomName}`,
     width: 640,
     height: 500,
+  })
+}
+
+export function openFindUserWindow() {
+  openChildWindow({
+    label: 'finduser',
+    url: '/?window=finduser',
+    title: 'Find Users',
+    width: 340,
+    height: 380,
+    parent: 'main',
+  })
+}
+
+export function openJoinRoomWindow() {
+  openChildWindow({
+    label: 'joinroom',
+    url: '/?window=joinroom',
+    title: 'Join Room',
+    width: 340,
+    height: 200,
+    parent: 'main',
   })
 }

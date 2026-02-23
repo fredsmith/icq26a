@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte'
   import { getCurrentWindow } from '@tauri-apps/api/window'
-  import { getRoomMessages, sendMessage } from '../lib/matrix'
+  import { getRoomMessages, getRoomMembers, sendMessage } from '../lib/matrix'
   import { invoke } from '@tauri-apps/api/core'
   import { listen } from '@tauri-apps/api/event'
   import type { Message } from '../lib/types'
+  import { openUserInfoWindow } from '../lib/windows'
   import TitleBar from './TitleBar.svelte'
 
   interface Props {
@@ -18,10 +19,18 @@
   let loading = $state(true)
   let messagesDiv = $state<HTMLDivElement | undefined>(undefined)
   let unlistenNewMsg: (() => void) | null = null
+  let dmUserId = $state<string | null>(null)
 
   onMount(async () => {
     if (roomId) {
       await loadMessages()
+      // Find the other user in this DM
+      try {
+        const members = await getRoomMembers(roomId)
+        const myId = await invoke<string>('try_restore_session').catch(() => null)
+        const other = members.find(m => m.user_id !== myId)
+        if (other) dmUserId = other.user_id
+      } catch { /* ignore */ }
     }
     unlistenNewMsg = await listen<Message>('new_message', (event) => {
       if (event.payload.room_id === roomId && event.payload.sender !== '') {
@@ -92,6 +101,9 @@
       <div class="field-row">
         <label>To:</label>
         <span>{roomName}</span>
+        {#if dmUserId}
+          <button class="info-btn" onclick={() => openUserInfoWindow(dmUserId!, roomName)}>Info</button>
+        {/if}
       </div>
     </div>
 
@@ -147,9 +159,18 @@
   .dm-header {
     padding: 0 4px;
   }
+  .dm-header .field-row {
+    display: flex;
+    align-items: center;
+  }
   .dm-header .field-row label {
     font-weight: bold;
     min-width: 30px;
+  }
+  .info-btn {
+    margin-left: auto;
+    font-size: 10px;
+    padding: 1px 8px;
   }
   .messages-area {
     flex: 1;

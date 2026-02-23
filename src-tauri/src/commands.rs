@@ -1,6 +1,7 @@
 use crate::matrix_client::{
     Buddy, LogEntry, LoginCredentials, MatrixState, Message, PersistedSession, Room,
-    ServerLog, VerificationEmoji, VerificationEmojisEvent, VerificationEvent,
+    RoomProfile, ServerLog, SharedRoom, UserProfile, VerificationEmoji,
+    VerificationEmojisEvent, VerificationEvent,
 };
 use matrix_sdk::{Client, ServerName};
 use tauri::{Emitter, State};
@@ -183,6 +184,212 @@ pub async fn matrix_login(
 }
 
 #[tauri::command]
+pub async fn matrix_register(
+    credentials: LoginCredentials,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<String, String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", format!("Registering as {} on {}", credentials.username, credentials.homeserver));
+
+    let server_name = ServerName::parse(&credentials.homeserver.replace("https://", ""))
+        .map_err(|e| {
+            slog(&app, &log, "error", format!("Invalid homeserver: {}", e));
+            format!("Invalid homeserver: {}", e)
+        })?;
+
+    let data_path = crate::matrix_client::data_dir()?;
+    if data_path.exists() {
+        slog(&app, &log, "info", "Clearing old sqlite store for fresh registration...".into());
+        let _ = std::fs::remove_dir_all(&data_path);
+    }
+    std::fs::create_dir_all(&data_path)
+        .map_err(|e| format!("Failed to create data dir: {}", e))?;
+
+    slog(&app, &log, "info", "Building client with sqlite store...".into());
+    let client = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        with_heartbeat(&app, &log, "Client build",
+            Client::builder()
+                .server_name(&server_name)
+                .sqlite_store(&data_path, None)
+                .build(),
+        ),
+    )
+        .await
+        .map_err(|_| {
+            slog(&app, &log, "error", "Client build timed out after 60s".into());
+            "Client build timed out — try restarting the app".to_string()
+        })?
+        .map_err(|e| {
+            slog(&app, &log, "error", format!("Failed to build client: {}", e));
+            format!("Failed to build client: {}", e)
+        })?;
+
+    let homeserver_url = client.homeserver().to_string();
+    slog(&app, &log, "info", format!("Resolved homeserver: {}", homeserver_url));
+    slog(&app, &log, "info", "Sending registration request...".into());
+
+    // Use raw HTTP for the UIAA handshake — the SDK doesn't expose
+    // session/flows from UIAA errors, so we need direct control.
+    let register_url = format!("{}/_matrix/client/v3/register", homeserver_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "username": credentials.username,
+        "password": credentials.password,
+        "kind": "user",
+        "initial_device_display_name": "icq26a"
+    });
+
+    let http = reqwest::Client::new();
+
+    // Step 1: Initial request — expect 401 with UIAA flows + session
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        http.post(&register_url).json(&body).send(),
+    )
+        .await
+        .map_err(|_| {
+            slog(&app, &log, "error", "Registration request timed out after 30s".into());
+            "Registration timed out".to_string()
+        })?
+        .map_err(|e| {
+            slog(&app, &log, "error", format!("Registration failed: {}", e));
+            format!("Registration failed: {}", e)
+        })?;
+
+    let status = resp.status();
+    let resp_body: serde_json::Value = resp.json().await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    // If registration succeeded without UIAA (rare — some servers allow it)
+    if status.is_success() {
+        slog(&app, &log, "info", "Registration succeeded without UIAA".into());
+        return finish_registration(client, &resp_body, &app, &log, &state).await;
+    }
+
+    // Not 401 → real error, not UIAA
+    if status.as_u16() != 401 {
+        let error_msg = resp_body["error"].as_str().unwrap_or("Registration failed");
+        slog(&app, &log, "error", format!("Registration failed: {}", error_msg));
+        return Err(format!("Registration failed: {}", error_msg));
+    }
+
+    // 401 UIAA — check if any flow is just m.login.dummy
+    slog(&app, &log, "info", format!("UIAA response, flows: {}", resp_body["flows"]));
+
+    let session = resp_body["session"].as_str();
+    let has_dummy_flow = resp_body["flows"].as_array().map_or(false, |flows| {
+        flows.iter().any(|f| {
+            f["stages"].as_array().map_or(false, |stages| {
+                stages.len() == 1 && stages[0].as_str() == Some("m.login.dummy")
+            })
+        })
+    });
+
+    if !has_dummy_flow {
+        slog(&app, &log, "warn", "Server requires auth flows we can't handle".into());
+        return Err(format!(
+            "This server requires additional verification steps (e.g. email or captcha). Please register at {} in your browser.",
+            credentials.homeserver
+        ));
+    }
+
+    // Step 2: Retry with m.login.dummy auth + session
+    slog(&app, &log, "info", "Retrying registration with m.login.dummy auth...".into());
+
+    let mut retry_body = body.clone();
+    let mut auth = serde_json::json!({"type": "m.login.dummy"});
+    if let Some(s) = session {
+        auth["session"] = serde_json::Value::String(s.to_string());
+    }
+    retry_body["auth"] = auth;
+
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        http.post(&register_url).json(&retry_body).send(),
+    )
+        .await
+        .map_err(|_| {
+            slog(&app, &log, "error", "Registration retry timed out".into());
+            "Registration timed out".to_string()
+        })?
+        .map_err(|e| {
+            slog(&app, &log, "error", format!("Registration retry failed: {}", e));
+            format!("Registration failed: {}", e)
+        })?;
+
+    if !resp.status().is_success() {
+        let error_body: serde_json::Value = resp.json().await
+            .map_err(|e| format!("Failed to parse error: {}", e))?;
+        let error_msg = error_body["error"].as_str().unwrap_or("Registration failed");
+        slog(&app, &log, "error", format!("Registration failed after UIAA: {}", error_msg));
+        return Err(format!("Registration failed: {}", error_msg));
+    }
+
+    let resp_body: serde_json::Value = resp.json().await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    slog(&app, &log, "info", "Registration succeeded after UIAA dummy auth".into());
+    finish_registration(client, &resp_body, &app, &log, &state).await
+}
+
+/// Post-registration: restore session on SDK client, save to disk, store in state.
+async fn finish_registration(
+    client: Client,
+    resp: &serde_json::Value,
+    app: &tauri::AppHandle,
+    log: &std::sync::Arc<ServerLog>,
+    state: &State<'_, MatrixState>,
+) -> Result<String, String> {
+    let user_id = resp["user_id"].as_str()
+        .ok_or("Registration response missing user_id")?;
+    let access_token = resp["access_token"].as_str()
+        .ok_or("Registration response missing access_token")?;
+    let device_id = resp["device_id"].as_str()
+        .ok_or("Registration response missing device_id")?;
+    let refresh_token = resp["refresh_token"].as_str().map(|s| s.to_string());
+
+    slog(app, log, "info", format!("Registered user_id={}, device_id={}", user_id, device_id));
+
+    // Restore session on SDK client so it's authenticated for sync, etc.
+    let session = matrix_sdk::authentication::matrix::MatrixSession {
+        meta: matrix_sdk::SessionMeta {
+            user_id: matrix_sdk::ruma::UserId::parse(user_id)
+                .map_err(|e| format!("Invalid user_id: {}", e))?,
+            device_id: device_id.into(),
+        },
+        tokens: matrix_sdk::SessionTokens {
+            access_token: access_token.to_string(),
+            refresh_token: refresh_token.clone(),
+        },
+    };
+    client.restore_session(session).await.map_err(|e| {
+        slog(app, log, "error", format!("Failed to restore session: {}", e));
+        format!("Registration succeeded but session setup failed: {}", e)
+    })?;
+
+    // Save session for restore on next launch
+    let session_data = PersistedSession {
+        homeserver_url: client.homeserver().to_string(),
+        user_id: user_id.to_string(),
+        device_id: device_id.to_string(),
+        access_token: access_token.to_string(),
+        refresh_token,
+    };
+    let session_path = crate::matrix_client::session_file_path()?;
+    let json = serde_json::to_string_pretty(&session_data)
+        .map_err(|e| format!("Failed to serialize session: {}", e))?;
+    std::fs::write(&session_path, json)
+        .map_err(|e| format!("Failed to write session: {}", e))?;
+    slog(app, log, "info", "Session saved to disk".into());
+
+    let mut client_lock = state.client.lock().await;
+    *client_lock = Some(client);
+
+    Ok(user_id.to_string())
+}
+
+#[tauri::command]
 pub async fn matrix_logout(
     app: tauri::AppHandle,
     state: State<'_, MatrixState>,
@@ -300,6 +507,206 @@ pub async fn try_restore_session(
 }
 
 #[tauri::command]
+pub async fn get_user_profile(
+    user_id: String,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<UserProfile, String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", format!("get_user_profile: {}", user_id));
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let parsed_user_id = matrix_sdk::ruma::UserId::parse(&user_id)
+        .map_err(|e| format!("Invalid user ID: {}", e))?;
+
+    // Fetch profile (display name + avatar)
+    let mut display_name = user_id.clone();
+    let mut avatar_url: Option<String> = None;
+    {
+        use matrix_sdk::ruma::api::client::profile::get_profile;
+        use matrix_sdk::ruma::api::client::profile::{AvatarUrl, DisplayName};
+        let request = get_profile::v3::Request::new(parsed_user_id.clone());
+        match tokio::time::timeout(std::time::Duration::from_secs(5), client.send(request)).await {
+            Ok(Ok(response)) => {
+                if let Ok(Some(name)) = response.get_static::<DisplayName>() {
+                    display_name = name;
+                }
+                if let Ok(Some(url)) = response.get_static::<AvatarUrl>() {
+                    avatar_url = Some(url.to_string());
+                }
+            }
+            Ok(Err(e)) => {
+                slog(&app, &log, "warn", format!("Profile fetch failed: {}", e));
+            }
+            Err(_) => {
+                slog(&app, &log, "warn", "Profile fetch timed out".into());
+            }
+        }
+    }
+
+    // Fetch presence + last_active_ago
+    let mut presence = "unknown".to_string();
+    let mut last_seen_ago: Option<u64> = None;
+    {
+        use matrix_sdk::ruma::api::client::presence::get_presence;
+        let request = get_presence::v3::Request::new(parsed_user_id.clone());
+        match tokio::time::timeout(std::time::Duration::from_secs(3), client.send(request)).await {
+            Ok(Ok(response)) => {
+                let is_stale = response.currently_active.is_none()
+                    && response.last_active_ago.is_none()
+                    && response.presence == matrix_sdk::ruma::presence::PresenceState::Offline;
+                if !is_stale {
+                    presence = match response.presence {
+                        matrix_sdk::ruma::presence::PresenceState::Online => "online",
+                        matrix_sdk::ruma::presence::PresenceState::Unavailable => "away",
+                        _ => "offline",
+                    }
+                    .to_string();
+                    last_seen_ago = response.last_active_ago.map(|d| d.as_secs());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Scan joined rooms for shared membership
+    let mut shared_rooms = Vec::new();
+    for room in client.joined_rooms() {
+        let members = room
+            .members(matrix_sdk::RoomMemberships::ACTIVE)
+            .await
+            .unwrap_or_default();
+        let has_user = members.iter().any(|m| m.user_id() == parsed_user_id);
+        if has_user {
+            let name = room
+                .display_name()
+                .await
+                .map(|n| n.to_string())
+                .unwrap_or_else(|_| "Unknown".to_string());
+            shared_rooms.push(SharedRoom {
+                room_id: room.room_id().to_string(),
+                name,
+            });
+        }
+    }
+
+    slog(
+        &app,
+        &log,
+        "info",
+        format!(
+            "get_user_profile: {} — presence={}, shared_rooms={}",
+            user_id,
+            presence,
+            shared_rooms.len()
+        ),
+    );
+
+    Ok(UserProfile {
+        user_id,
+        display_name,
+        avatar_url,
+        presence,
+        last_seen_ago,
+        shared_rooms,
+    })
+}
+
+#[tauri::command]
+pub async fn get_room_info(
+    room_id: String,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<RoomProfile, String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", format!("get_room_info: {}", room_id));
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let room_id_parsed = matrix_sdk::ruma::OwnedRoomId::try_from(room_id.as_str())
+        .map_err(|e| format!("Invalid room ID: {}", e))?;
+    let room = client.get_room(&room_id_parsed).ok_or("Room not found")?;
+
+    let name = room
+        .display_name()
+        .await
+        .map(|n| n.to_string())
+        .unwrap_or_else(|_| "Unknown".to_string());
+
+    let topic = room.topic();
+
+    let is_direct = room.is_direct().await.unwrap_or(false);
+
+    let members = room
+        .members(matrix_sdk::RoomMemberships::ACTIVE)
+        .await
+        .unwrap_or_default();
+    let member_count = members.len() as u64;
+
+    Ok(RoomProfile {
+        room_id,
+        name,
+        topic,
+        is_direct,
+        member_count,
+    })
+}
+
+#[tauri::command]
+pub async fn create_dm_room(
+    user_id: String,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<Room, String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", format!("create_dm_room: {}", user_id));
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let parsed_user_id = matrix_sdk::ruma::UserId::parse(&user_id)
+        .map_err(|e| format!("Invalid user ID: {}", e))?;
+
+    use matrix_sdk::ruma::api::client::room::create_room::v3::Request as CreateRoomRequest;
+    let mut request = CreateRoomRequest::new();
+    request.invite = vec![parsed_user_id];
+    request.is_direct = true;
+    request.preset = Some(matrix_sdk::ruma::api::client::room::create_room::v3::RoomPreset::TrustedPrivateChat);
+
+    let response = client
+        .create_room(request)
+        .await
+        .map_err(|e| {
+            slog(&app, &log, "error", format!("Failed to create DM room: {}", e));
+            format!("Failed to create room: {}", e)
+        })?;
+
+    let room_id = response.room_id().to_string();
+    slog(&app, &log, "info", format!("DM room created: {}", room_id));
+
+    // Get the room to fetch its display name
+    let name = if let Some(room) = client.get_room(response.room_id()) {
+        room.display_name()
+            .await
+            .map(|n| n.to_string())
+            .unwrap_or_else(|_| user_id.clone())
+    } else {
+        user_id.clone()
+    };
+
+    Ok(Room {
+        room_id,
+        name,
+        is_direct: true,
+        last_message: None,
+        unread_count: 0,
+    })
+}
+
+#[tauri::command]
 pub async fn get_buddy_list(
     app: tauri::AppHandle,
     state: State<'_, MatrixState>,
@@ -323,7 +730,10 @@ pub async fn get_buddy_list(
     slog(&app, &log, "info", format!("Found {} joined rooms", joined.len()));
 
     let mut buddies = Vec::new();
+    let mut seen_user_ids = std::collections::HashSet::new();
     let mut presence_supported = true;
+    let my_user_id = client.user_id().map(|u| u.to_string()).unwrap_or_default();
+
     for room in joined {
         if room.is_direct().await.unwrap_or(false) {
             let members = room
@@ -332,12 +742,7 @@ pub async fn get_buddy_list(
                 .unwrap_or_default();
             for member in members {
                 let user_id = member.user_id().to_string();
-                if user_id
-                    != client
-                        .user_id()
-                        .map(|u| u.to_string())
-                        .unwrap_or_default()
-                {
+                if user_id != my_user_id && seen_user_ids.insert(user_id.clone()) {
                     let presence = if presence_supported {
                         match fetch_user_presence(client, member.user_id()).await {
                             Some(p) => p,
@@ -863,5 +1268,193 @@ pub async fn cancel_verification(
         serde_json::json!({ "flow_id": flow_id }),
     );
 
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn search_users(
+    query: String,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<Vec<Buddy>, String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", format!("search_users: {}", query));
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    use matrix_sdk::ruma::api::client::user_directory::search_users;
+
+    let request = search_users::v3::Request::new(query);
+    let response = client.send(request).await.map_err(|e| {
+        slog(&app, &log, "error", format!("User search failed: {}", e));
+        format!("User search failed: {}", e)
+    })?;
+
+    let results: Vec<Buddy> = response.results.iter().map(|user| {
+        Buddy {
+            user_id: user.user_id.to_string(),
+            display_name: user.display_name.clone().unwrap_or_else(|| user.user_id.to_string()),
+            avatar_url: user.avatar_url.as_ref().map(|u| u.to_string()),
+            presence: "unknown".to_string(),
+        }
+    }).collect();
+
+    slog(&app, &log, "info", format!("search_users: found {} results", results.len()));
+    Ok(results)
+}
+
+#[tauri::command]
+pub async fn join_room(
+    room_id_or_alias: String,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<Room, String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", format!("join_room: {}", room_id_or_alias));
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let id = matrix_sdk::ruma::OwnedRoomOrAliasId::try_from(room_id_or_alias.as_str())
+        .map_err(|e| format!("Invalid room ID or alias: {}", e))?;
+
+    let room = client.join_room_by_id_or_alias(&id, &[]).await.map_err(|e| {
+        slog(&app, &log, "error", format!("Failed to join room: {}", e));
+        format!("Failed to join room: {}", e)
+    })?;
+
+    let room_id_str = room.room_id().to_string();
+    let name = room
+        .display_name()
+        .await
+        .map(|n| n.to_string())
+        .unwrap_or_else(|_| room_id_str.clone());
+
+    slog(&app, &log, "info", format!("Joined room: {} ({})", name, room_id_str));
+
+    Ok(Room {
+        room_id: room_id_str,
+        name,
+        is_direct: false,
+        last_message: None,
+        unread_count: 0,
+    })
+}
+
+#[tauri::command]
+pub async fn create_room(
+    room_alias: String,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<Room, String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", format!("create_room: {}", room_alias));
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    use matrix_sdk::ruma::api::client::room::create_room::v3::Request as CreateRoomRequest;
+    use matrix_sdk::ruma::api::client::room::create_room::v3::RoomPreset;
+
+    // Extract local alias from #alias:server → alias
+    let local_alias = room_alias
+        .trim_start_matches('#')
+        .split(':')
+        .next()
+        .unwrap_or(&room_alias)
+        .to_string();
+
+    let mut request = CreateRoomRequest::new();
+    request.room_alias_name = Some(local_alias.clone());
+    request.name = Some(local_alias.clone());
+    request.preset = Some(RoomPreset::PublicChat);
+
+    let response = client.create_room(request).await.map_err(|e| {
+        slog(&app, &log, "error", format!("Failed to create room: {}", e));
+        format!("Failed to create room: {}", e)
+    })?;
+
+    let room_id_str = response.room_id().to_string();
+    let name = if let Some(room) = client.get_room(response.room_id()) {
+        room.display_name()
+            .await
+            .map(|n| n.to_string())
+            .unwrap_or_else(|_| local_alias.clone())
+    } else {
+        local_alias.clone()
+    };
+
+    slog(&app, &log, "info", format!("Created room: {} ({})", name, room_id_str));
+
+    Ok(Room {
+        room_id: room_id_str,
+        name,
+        is_direct: false,
+        last_message: None,
+        unread_count: 0,
+    })
+}
+
+#[tauri::command]
+pub async fn leave_room(
+    room_id: String,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<(), String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", format!("leave_room: {}", room_id));
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let room_id = matrix_sdk::ruma::OwnedRoomId::try_from(room_id.as_str())
+        .map_err(|e| format!("Invalid room ID: {}", e))?;
+    let room = client.get_room(&room_id).ok_or("Room not found")?;
+
+    room.leave().await.map_err(|e| {
+        slog(&app, &log, "error", format!("Failed to leave room: {}", e));
+        format!("Failed to leave room: {}", e)
+    })?;
+
+    slog(&app, &log, "info", "Left room OK".into());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn remove_buddy(
+    user_id: String,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<(), String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", format!("remove_buddy: {}", user_id));
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let target_id = matrix_sdk::ruma::UserId::parse(&user_id)
+        .map_err(|e| format!("Invalid user ID: {}", e))?;
+
+    let mut left_count = 0;
+    for room in client.joined_rooms() {
+        if !room.is_direct().await.unwrap_or(false) {
+            continue;
+        }
+        let members = room
+            .members(matrix_sdk::RoomMemberships::ACTIVE)
+            .await
+            .unwrap_or_default();
+        let has_target = members.iter().any(|m| m.user_id() == target_id);
+        if has_target {
+            if let Err(e) = room.leave().await {
+                slog(&app, &log, "error", format!("Failed to leave DM room {}: {}", room.room_id(), e));
+            } else {
+                left_count += 1;
+            }
+        }
+    }
+
+    slog(&app, &log, "info", format!("remove_buddy: left {} DM rooms with {}", left_count, user_id));
     Ok(())
 }

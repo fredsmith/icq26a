@@ -22,6 +22,20 @@ const windowType = params.get('window')
   } else if (windowType === 'serverlog') {
     const mod = await import('./components/ServerLog.svelte')
     component = mod.default
+  } else if (windowType === 'userinfo') {
+    const mod = await import('./components/UserInfo.svelte')
+    component = mod.default
+    props = {
+      userId: params.get('userId') ?? '',
+      displayName: params.get('displayName') ?? 'Unknown',
+    }
+  } else if (windowType === 'roominfo') {
+    const mod = await import('./components/RoomInfo.svelte')
+    component = mod.default
+    props = {
+      roomId: params.get('roomId') ?? '',
+      roomName: params.get('roomName') ?? 'Room',
+    }
   } else if (windowType === 'chatroom') {
     const mod = await import('./components/ChatRoom.svelte')
     component = mod.default
@@ -29,6 +43,12 @@ const windowType = params.get('window')
       roomId: params.get('roomId') ?? '',
       roomName: params.get('roomName') ?? 'Chat',
     }
+  } else if (windowType === 'finduser') {
+    const mod = await import('./components/FindUser.svelte')
+    component = mod.default
+  } else if (windowType === 'joinroom') {
+    const mod = await import('./components/JoinRoom.svelte')
+    component = mod.default
   } else {
     const mod = await import('./App.svelte')
     component = mod.default

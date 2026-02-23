@@ -21,4 +21,5 @@ matrix-sdk = { version = "0.16", features = ["sqlite"] }
 tokio = { version = "1", features = ["full"] }
 dirs = "6"
 mime_guess = "2"
+reqwest = { version = "0.12", features = ["json"] }
 tauri-plugin-dialog = "2"

@@ -33,6 +33,28 @@ export interface Message {
   msg_type: 'text' | 'image' | 'file' | 'audio' | 'video'
 }
 
+export interface SharedRoom {
+  room_id: string
+  name: string
+}
+
+export interface UserProfile {
+  user_id: string
+  display_name: string
+  avatar_url: string | null
+  presence: string
+  last_seen_ago: number | null
+  shared_rooms: SharedRoom[]
+}
+
+export interface RoomProfile {
+  room_id: string
+  name: string
+  topic: string | null
+  is_direct: boolean
+  member_count: number
+}
+
 export interface LoginCredentials {
   homeserver: string
   username: string
