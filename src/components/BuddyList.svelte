@@ -1,20 +1,24 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { listen } from '@tauri-apps/api/event'
-  import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
-  import { buddyList, rooms, unreadCounts, isLoggedIn, currentUserId } from '../lib/stores'
-  import { getBuddyList, getRooms, matrixLogout } from '../lib/matrix'
+  import { buddyList, rooms, unreadCounts, isLoggedIn, currentUserId, currentStatus } from '../lib/stores'
+  import { getBuddyList, getRooms, matrixLogout, matrixDisconnect, tryRestoreSession } from '../lib/matrix'
+  import { invoke } from '@tauri-apps/api/core'
   import type { Buddy, Message } from '../lib/types'
   import StatusPicker from './StatusPicker.svelte'
   import TitleBar from './TitleBar.svelte'
   import { openPreferencesWindow, openDirectMessageWindow, openChatRoomWindow, openServerLogWindow } from '../lib/windows'
 
+  const isOffline = $derived($currentStatus === 'offline')
   const presenceAvailable = $derived($buddyList.some(b => b.presence !== 'unknown'))
   const onlineBuddies = $derived($buddyList.filter(b => b.presence !== 'offline' && b.presence !== 'unknown'))
   const offlineBuddies = $derived($buddyList.filter(b => b.presence === 'offline'))
   const groupRooms = $derived($rooms.filter(r => !r.is_direct))
 
+  let refreshing = false
   async function refreshLists() {
+    if (refreshing) return
+    refreshing = true
     try {
       const fetchedBuddies = await getBuddyList()
       buddyList.set(fetchedBuddies)
@@ -22,6 +26,8 @@
       rooms.set(fetchedRooms)
     } catch (e) {
       console.error('Failed to load buddy list:', e)
+    } finally {
+      refreshing = false
     }
   }
 
@@ -67,25 +73,45 @@
     return $unreadCounts[room.room_id] || 0
   }
 
+  async function handleDisconnect() {
+    try {
+      await matrixDisconnect()
+    } catch (e) {
+      console.error('Disconnect failed:', e)
+    }
+    currentStatus.set('offline')
+  }
+
+  async function handleReconnect() {
+    currentStatus.set('online')
+    try {
+      await tryRestoreSession()
+      await invoke('start_sync')
+      await refreshLists()
+    } catch (e) {
+      console.error('Reconnect failed:', e)
+    }
+  }
+
   async function handleLogout() {
     try {
       await matrixLogout()
     } catch (e) {
       console.error('Logout failed:', e)
     }
+    isLoggedIn.set(false)
+    currentUserId.set(null)
+    currentStatus.set('online')
     buddyList.set([])
     rooms.set([])
     unreadCounts.set({})
-    currentUserId.set(null)
-    isLoggedIn.set(false)
-    await getCurrentWindow().setSize(new LogicalSize(300, 320))
   }
 </script>
 
 <div class="window buddy-list-window">
   <TitleBar title="ICQ26a" showMinimize />
   <div class="window-body">
-    <div class="buddy-scroll">
+    <div class="buddy-scroll" class:disconnected={isOffline}>
       {#if presenceAvailable}
         {#if onlineBuddies.length > 0}
           <div class="group-header">Online</div>
@@ -141,10 +167,9 @@
 
   <!-- Bottom toolbar -->
   <div class="buddy-toolbar">
-    <StatusPicker {presenceAvailable} />
-    <button onclick={openPreferencesWindow}>Prefs</button>
+    <StatusPicker {presenceAvailable} onLogout={handleLogout} onDisconnect={handleDisconnect} onReconnect={handleReconnect} />
+    <button onclick={openPreferencesWindow}>Settings</button>
     <button onclick={openServerLogWindow}>Log</button>
-    <button onclick={handleLogout}>Logout</button>
   </div>
 </div>
 
@@ -165,9 +190,13 @@
   .buddy-scroll {
     flex: 1;
     overflow-y: auto;
-    background: white;
+    background: #c0c0c0;
     border: 2px inset #c0c0c0;
     margin: 4px;
+  }
+  .buddy-scroll.disconnected {
+    opacity: 0.5;
+    pointer-events: none;
   }
   .group-header {
     font-weight: bold;

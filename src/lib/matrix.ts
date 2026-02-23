@@ -9,6 +9,10 @@ export async function matrixLogout(): Promise<void> {
   return invoke('matrix_logout')
 }
 
+export async function matrixDisconnect(): Promise<void> {
+  return invoke('matrix_disconnect')
+}
+
 export async function getBuddyList(): Promise<Buddy[]> {
   return invoke('get_buddy_list')
 }

@@ -6,13 +6,13 @@
   import { isLoggedIn, currentUserId } from './lib/stores'
   import { tryRestoreSession } from './lib/matrix'
   import { initNotifications, playMessageSound } from './lib/notifications'
+  import { openServerLogWindow } from './lib/windows'
   import type { Message } from './lib/types'
   import Login from './components/Login.svelte'
   import BuddyList from './components/BuddyList.svelte'
   import VerificationDialog from './components/VerificationDialog.svelte'
 
-  const LOGIN_SIZE = new LogicalSize(300, 320)
-  const BUDDY_LIST_SIZE = new LogicalSize(300, 480)
+  const WINDOW_SIZE = new LogicalSize(300, 480)
 
   let restoring = $state(true)
 
@@ -30,11 +30,11 @@
       const userId = await tryRestoreSession()
       currentUserId.set(userId)
       isLoggedIn.set(true)
-      await resizeWindow(BUDDY_LIST_SIZE)
+      await resizeWindow(WINDOW_SIZE)
       await invoke('start_sync')
     } catch {
       // No saved session or restore failed — show login
-      await resizeWindow(LOGIN_SIZE)
+      await resizeWindow(WINDOW_SIZE)
     } finally {
       restoring = false
     }
@@ -45,7 +45,10 @@
   {#if restoring}
     <div class="window" style="width: 200px; margin: 100px auto; text-align: center;">
       <div class="title-bar"><div class="title-bar-text">ICQ26a</div></div>
-      <div class="window-body"><p>Connecting...</p></div>
+      <div class="window-body">
+        <p>Connecting...</p>
+        <button onclick={openServerLogWindow}>Log</button>
+      </div>
     </div>
   {:else if $isLoggedIn}
     <BuddyList />

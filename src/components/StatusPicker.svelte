@@ -5,8 +5,11 @@
 
   interface Props {
     presenceAvailable?: boolean
+    onLogout?: () => void
+    onDisconnect?: () => void
+    onReconnect?: () => void
   }
-  let { presenceAvailable = true }: Props = $props()
+  let { presenceAvailable = true, onLogout, onDisconnect, onReconnect }: Props = $props()
 
   let menuOpen = $state(false)
 
@@ -18,19 +21,27 @@
     { value: 'occupied', label: 'Occupied (Urgent Msgs)', color: '#cc0000' },
     { value: 'dnd', label: 'DND (Do not Disturb)', color: '#cc0000' },
     { value: 'invisible', label: 'Privacy (Invisible)', color: '#999999' },
-    { value: 'offline', label: 'Offline/Disconnect', color: '#999999' },
+    { value: 'offline', label: 'Offline', color: '#999999' },
   ]
 
   const simpleStatuses: { value: PresenceStatus; label: string; color: string }[] = [
     { value: 'online', label: 'Online', color: '#00cc00' },
-    { value: 'offline', label: 'Offline/Disconnect', color: '#999999' },
+    { value: 'offline', label: 'Offline', color: '#999999' },
   ]
 
   const statuses = $derived(presenceAvailable ? allStatuses : simpleStatuses)
 
   async function selectStatus(status: PresenceStatus) {
-    currentStatus.set(status)
     menuOpen = false
+    if (status === 'offline' && onDisconnect) {
+      onDisconnect()
+      return
+    }
+    if (status === 'online' && $currentStatus === 'offline' && onReconnect) {
+      onReconnect()
+      return
+    }
+    currentStatus.set(status)
     await setPresence(status)
   }
 
@@ -58,6 +69,15 @@
           {status.label}
         </button>
       {/each}
+      {#if onLogout}
+        <div class="menu-separator"></div>
+        <button
+          class="status-menu-item"
+          onclick={(e: MouseEvent) => { e.stopPropagation(); menuOpen = false; onLogout() }}
+        >
+          Logout
+        </button>
+      {/if}
     </div>
   {/if}
 </div>
@@ -106,5 +126,10 @@
   }
   .status-menu-item.active {
     font-weight: bold;
+  }
+  .menu-separator {
+    height: 1px;
+    background: #808080;
+    margin: 2px 4px;
   }
 </style>

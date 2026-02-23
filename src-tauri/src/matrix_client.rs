@@ -121,6 +121,7 @@ pub fn session_file_path() -> Result<PathBuf, String> {
 pub struct MatrixState {
     pub client: Arc<Mutex<Option<Client>>>,
     pub log: Arc<ServerLog>,
+    pub sync_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl MatrixState {
@@ -128,6 +129,14 @@ impl MatrixState {
         Self {
             client: Arc::new(Mutex::new(None)),
             log: Arc::new(ServerLog::new()),
+            sync_tasks: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn abort_sync_tasks(&self) {
+        let mut tasks = self.sync_tasks.lock().unwrap();
+        for task in tasks.drain(..) {
+            task.abort();
         }
     }
 }

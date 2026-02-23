@@ -14,6 +14,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::matrix_login,
             commands::matrix_logout,
+            commands::matrix_disconnect,
             commands::try_restore_session,
             commands::get_buddy_list,
             commands::get_room_members,

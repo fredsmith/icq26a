@@ -56,7 +56,8 @@ where
     }
 }
 
-/// Returns Some(status) on success, None if the server doesn't support presence.
+/// Returns Some(status) on success, None if the server doesn't support presence
+/// (or returns stub/stale data, e.g. matrix.org with presence disabled).
 async fn fetch_user_presence(client: &Client, user_id: &matrix_sdk::ruma::UserId) -> Option<String> {
     use matrix_sdk::ruma::api::client::presence::get_presence;
 
@@ -65,11 +66,22 @@ async fn fetch_user_presence(client: &Client, user_id: &matrix_sdk::ruma::UserId
         std::time::Duration::from_secs(3),
         client.send(request),
     ).await {
-        Ok(Ok(response)) => Some(match response.presence {
-            matrix_sdk::ruma::presence::PresenceState::Online => "online",
-            matrix_sdk::ruma::presence::PresenceState::Unavailable => "away",
-            _ => "offline",
-        }.to_string()),
+        Ok(Ok(response)) => {
+            // Servers with presence disabled (e.g. matrix.org) return 200 but with
+            // stale default data: offline, no last_active_ago, no currently_active.
+            // Treat this as "not supported" so we don't show bogus offline statuses.
+            if response.currently_active.is_none()
+                && response.last_active_ago.is_none()
+                && response.presence == matrix_sdk::ruma::presence::PresenceState::Offline
+            {
+                return None;
+            }
+            Some(match response.presence {
+                matrix_sdk::ruma::presence::PresenceState::Online => "online",
+                matrix_sdk::ruma::presence::PresenceState::Unavailable => "away",
+                _ => "offline",
+            }.to_string())
+        }
         _ => None, // timeout or error
     }
 }
@@ -97,15 +109,29 @@ pub async fn matrix_login(
         })?;
 
     let data_path = crate::matrix_client::data_dir()?;
+    // Fresh login — clear stale sqlite stores to avoid device ID mismatches
+    if data_path.exists() {
+        slog(&app, &log, "info", "Clearing old sqlite store for fresh login...".into());
+        let _ = std::fs::remove_dir_all(&data_path);
+    }
     std::fs::create_dir_all(&data_path)
         .map_err(|e| format!("Failed to create data dir: {}", e))?;
 
     slog(&app, &log, "info", "Building client with sqlite store...".into());
-    let client = Client::builder()
-        .server_name(&server_name)
-        .sqlite_store(&data_path, None)
-        .build()
+    let client = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        with_heartbeat(&app, &log, "Client build",
+            Client::builder()
+                .server_name(&server_name)
+                .sqlite_store(&data_path, None)
+                .build(),
+        ),
+    )
         .await
+        .map_err(|_| {
+            slog(&app, &log, "error", "Client build timed out after 60s".into());
+            "Client build timed out — try restarting the app".to_string()
+        })?
         .map_err(|e| {
             slog(&app, &log, "error", format!("Failed to build client: {}", e));
             format!("Failed to build client: {}", e)
@@ -114,12 +140,19 @@ pub async fn matrix_login(
     slog(&app, &log, "info", format!("Resolved homeserver: {}", client.homeserver()));
     slog(&app, &log, "info", "Sending login request...".into());
 
-    let response = client
-        .matrix_auth()
-        .login_username(&credentials.username, &credentials.password)
-        .initial_device_display_name("icq26a")
-        .send()
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        client
+            .matrix_auth()
+            .login_username(&credentials.username, &credentials.password)
+            .initial_device_display_name("icq26a")
+            .send(),
+    )
         .await
+        .map_err(|_| {
+            slog(&app, &log, "error", "Login request timed out after 30s".into());
+            "Login timed out".to_string()
+        })?
         .map_err(|e| {
             slog(&app, &log, "error", format!("Login failed: {}", e));
             format!("Login failed: {}", e)
@@ -157,6 +190,8 @@ pub async fn matrix_logout(
     let log = state.log.clone();
     slog(&app, &log, "info", "Logging out...".into());
 
+    state.abort_sync_tasks();
+
     let mut client_lock = state.client.lock().await;
     if let Some(client) = client_lock.as_ref() {
         let _ = client.matrix_auth().logout().await;
@@ -168,6 +203,23 @@ pub async fn matrix_logout(
     }
 
     slog(&app, &log, "info", "Logged out, session file deleted".into());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn matrix_disconnect(
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<(), String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", "Disconnecting (keeping session)...".into());
+
+    state.abort_sync_tasks();
+
+    let mut client_lock = state.client.lock().await;
+    *client_lock = None;
+
+    slog(&app, &log, "info", "Disconnected, session file preserved".into());
     Ok(())
 }
 
@@ -198,11 +250,20 @@ pub async fn try_restore_session(
 
     let data_path = crate::matrix_client::data_dir()?;
 
-    let client = Client::builder()
-        .homeserver_url(&saved.homeserver_url)
-        .sqlite_store(&data_path, None)
-        .build()
+    let client = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        with_heartbeat(&app, &log, "Client build",
+            Client::builder()
+                .homeserver_url(&saved.homeserver_url)
+                .sqlite_store(&data_path, None)
+                .build(),
+        ),
+    )
         .await
+        .map_err(|_| {
+            slog(&app, &log, "error", "Client build timed out after 60s".into());
+            "Session restore timed out — try restarting the app".to_string()
+        })?
         .map_err(|e| {
             slog(&app, &log, "error", format!("Failed to build client: {}", e));
             format!("Failed to build client: {}", e)
@@ -495,11 +556,14 @@ pub async fn start_sync(
 
     let app_handle = app.clone();
 
+    // Abort any existing sync tasks before starting new ones
+    state.abort_sync_tasks();
+
     // Poll for room list changes (new rooms joined from other clients)
     let poll_client = client.clone();
     let poll_app = app.clone();
     let poll_log = log.clone();
-    tokio::spawn(async move {
+    let poll_task = tokio::spawn(async move {
         let mut known_ids: std::collections::HashSet<String> = poll_client
             .joined_rooms()
             .iter()
@@ -528,7 +592,7 @@ pub async fn start_sync(
     let sync_log = log.clone();
     let sync_app = app.clone();
 
-    tokio::spawn(async move {
+    let sync_task = tokio::spawn(async move {
         // Handle incoming verification requests
         let va = verify_app.clone();
         let vc = verify_client.clone();
@@ -590,6 +654,12 @@ pub async fn start_sync(
             Err(e) => slog_buf(&sync_log, "error", format!("Sync loop error: {}", e)),
         }
     });
+
+    // Store task handles so we can abort them on disconnect/logout
+    {
+        let mut tasks = state.sync_tasks.lock().unwrap();
+        *tasks = vec![poll_task, sync_task];
+    }
 
     Ok(())
 }
