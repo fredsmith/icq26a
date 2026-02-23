@@ -5,12 +5,36 @@ mod matrix_client;
 
 use matrix_client::MatrixState;
 
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use objc2::MainThreadMarker;
+    use objc2::AllocAnyThread;
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    unsafe {
+        let bytes = include_bytes!("../icons/icon.png");
+        let data = NSData::with_bytes(bytes);
+        if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+            // Safe: setup runs on the main thread
+            let mtm = MainThreadMarker::new_unchecked();
+            let app = NSApplication::sharedApplication(mtm);
+            app.setApplicationIconImage(Some(&image));
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(MatrixState::new())
+        .setup(|_app| {
+            #[cfg(target_os = "macos")]
+            set_dock_icon();
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::matrix_login,
             commands::matrix_register,
