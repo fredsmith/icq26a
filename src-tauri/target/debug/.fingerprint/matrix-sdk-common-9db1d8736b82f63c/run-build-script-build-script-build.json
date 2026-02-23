@@ -1,1 +1,0 @@
-{"rustc":12983045474342760211,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[7059373109538311243,"build_script_build",false,2209138789794363403]],"local":[{"RerunIfChanged":{"output":"debug/build/matrix-sdk-common-9db1d8736b82f63c/output","paths":["build.rs"]}}],"rustflags":[],"config":0,"compile_kind":0}
