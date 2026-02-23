@@ -2101,6 +2101,7 @@ dependencies = [
 name = "icq26a"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "dirs",
  "matrix-sdk",
  "mime_guess",

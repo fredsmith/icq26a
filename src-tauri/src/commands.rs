@@ -25,6 +25,63 @@ fn slog_buf(log: &ServerLog, level: &str, message: String) {
     log.push(level, message);
 }
 
+/// Convert an mxc:// URL to an HTTP thumbnail URL via the homeserver's media API.
+fn mxc_to_http(homeserver: &str, mxc_url: &str) -> Option<String> {
+    let path = mxc_url.strip_prefix("mxc://")?;
+    let (server_name, media_id) = path.split_once('/')?;
+    Some(format!(
+        "{}/_matrix/media/v3/thumbnail/{}/{}?width=96&height=96&method=crop",
+        homeserver.trim_end_matches('/'),
+        server_name,
+        media_id,
+    ))
+}
+
+/// Fetch an mxc:// avatar as a base64 data URL using authenticated media endpoints.
+/// Tries the authenticated endpoint first (_matrix/client/v1/media), then falls back
+/// to the unauthenticated one (_matrix/media/v3).
+async fn fetch_avatar_data_url(client: &Client, mxc_url: &str) -> Option<String> {
+    let path = mxc_url.strip_prefix("mxc://")?;
+    let (server_name, media_id) = path.split_once('/')?;
+    let hs = client.homeserver().to_string();
+    let hs = hs.trim_end_matches('/');
+
+    let access_token = client.access_token()?;
+
+    let urls = [
+        format!("{}/_matrix/client/v1/media/thumbnail/{}/{}?width=96&height=96&method=crop", hs, server_name, media_id),
+        format!("{}/_matrix/media/v3/thumbnail/{}/{}?width=96&height=96&method=crop", hs, server_name, media_id),
+    ];
+
+    let http = reqwest::Client::new();
+    for url in &urls {
+        let resp = http.get(url)
+            .header("Authorization", format!("Bearer {}", access_token))
+            .send()
+            .await
+            .ok()?;
+        if resp.status().is_success() {
+            let bytes = resp.bytes().await.ok()?;
+            if bytes.is_empty() {
+                continue;
+            }
+            let content_type = if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+                "image/png"
+            } else if bytes.starts_with(&[0xFF, 0xD8]) {
+                "image/jpeg"
+            } else if bytes.starts_with(b"GIF") {
+                "image/gif"
+            } else {
+                "image/png"
+            };
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            return Some(format!("data:{};base64,{}", content_type, b64));
+        }
+    }
+    None
+}
+
 /// Wraps a future with periodic heartbeat log messages if it takes longer than 5s.
 async fn with_heartbeat<F, T>(
     app: &tauri::AppHandle,
@@ -524,6 +581,7 @@ pub async fn get_user_profile(
     // Fetch profile (display name + avatar)
     let mut display_name = user_id.clone();
     let mut avatar_url: Option<String> = None;
+    let mut mxc_avatar: Option<String> = None;
     {
         use matrix_sdk::ruma::api::client::profile::get_profile;
         use matrix_sdk::ruma::api::client::profile::{AvatarUrl, DisplayName};
@@ -534,7 +592,7 @@ pub async fn get_user_profile(
                     display_name = name;
                 }
                 if let Ok(Some(url)) = response.get_static::<AvatarUrl>() {
-                    avatar_url = Some(url.to_string());
+                    mxc_avatar = Some(url.to_string());
                 }
             }
             Ok(Err(e)) => {
@@ -544,6 +602,11 @@ pub async fn get_user_profile(
                 slog(&app, &log, "warn", "Profile fetch timed out".into());
             }
         }
+    }
+
+    // Download avatar via authenticated media endpoint → base64 data URL
+    if let Some(mxc) = &mxc_avatar {
+        avatar_url = fetch_avatar_data_url(client, mxc).await;
     }
 
     // Fetch presence + last_active_ago
@@ -755,10 +818,11 @@ pub async fn get_buddy_list(
                     } else {
                         "unknown".to_string()
                     };
+                    let hs = client.homeserver().to_string();
                     buddies.push(Buddy {
                         user_id: user_id.clone(),
                         display_name: member.display_name().unwrap_or(&user_id).to_string(),
-                        avatar_url: member.avatar_url().map(|u| u.to_string()),
+                        avatar_url: member.avatar_url().and_then(|u| mxc_to_http(&hs, &u.to_string())),
                         presence,
                     });
                 }
@@ -798,13 +862,14 @@ pub async fn get_room_members(
 
     slog(&app, &log, "info", format!("Room has {} active members", members.len()));
 
+    let hs = client.homeserver().to_string();
     let buddies: Vec<Buddy> = members
         .iter()
         .map(|member| {
             let user_id = member.user_id().to_string();
             Buddy {
                 display_name: member.display_name().unwrap_or(&user_id).to_string(),
-                avatar_url: member.avatar_url().map(|u| u.to_string()),
+                avatar_url: member.avatar_url().and_then(|u| mxc_to_http(&hs, &u.to_string())),
                 presence: "offline".to_string(),
                 user_id,
             }
@@ -1339,11 +1404,12 @@ pub async fn search_users(
         format!("User search failed: {}", e)
     })?;
 
+    let hs = client.homeserver().to_string();
     let results: Vec<Buddy> = response.results.iter().map(|user| {
         Buddy {
             user_id: user.user_id.to_string(),
             display_name: user.display_name.clone().unwrap_or_else(|| user.user_id.to_string()),
-            avatar_url: user.avatar_url.as_ref().map(|u| u.to_string()),
+            avatar_url: user.avatar_url.as_ref().and_then(|u| mxc_to_http(&hs, &u.to_string())),
             presence: "unknown".to_string(),
         }
     }).collect();

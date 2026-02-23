@@ -17,9 +17,35 @@
   let messages = $state<Message[]>([])
   let members = $state<Buddy[]>([])
   let newMessage = $state('')
+  let memberFilter = $state('')
   let loading = $state(true)
   let messagesDiv = $state<HTMLDivElement | undefined>(undefined)
   let unlistenNewMsg: (() => void) | null = null
+
+  // Sort members by most recent message, then filter by search term
+  const sortedFilteredMembers = $derived.by(() => {
+    // Build a map of sender → most recent timestamp
+    const lastActive = new Map<string, number>()
+    for (const msg of messages) {
+      const existing = lastActive.get(msg.sender) ?? 0
+      if (msg.timestamp > existing) {
+        lastActive.set(msg.sender, msg.timestamp)
+      }
+    }
+
+    const sorted = [...members].sort((a, b) => {
+      const aTime = lastActive.get(a.user_id) ?? 0
+      const bTime = lastActive.get(b.user_id) ?? 0
+      if (aTime !== bTime) return bTime - aTime
+      return a.display_name.localeCompare(b.display_name)
+    })
+
+    if (!memberFilter.trim()) return sorted
+    const q = memberFilter.trim().toLowerCase()
+    return sorted.filter(m =>
+      m.display_name.toLowerCase().includes(q) || m.user_id.toLowerCase().includes(q)
+    )
+  })
 
   onMount(async () => {
     if (roomId) {
@@ -158,9 +184,14 @@
       <div class="panel-info-row">
         <button class="info-btn" onclick={() => openRoomInfoWindow(roomId, roomName)}>Info</button>
       </div>
-      <div class="members-header">Participants</div>
+      <div class="members-header">Participants ({members.length})</div>
+      {#if members.length > 5}
+        <div class="member-filter">
+          <input type="text" bind:value={memberFilter} placeholder="Filter..." />
+        </div>
+      {/if}
       <div class="members-list">
-        {#each members as member}
+        {#each sortedFilteredMembers as member}
           <button class="member-row clickable" oncontextmenu={(e: MouseEvent) => handleMemberContext(e, member)}>
             <span class="member-dot"></span>
             {member.display_name}
@@ -259,6 +290,17 @@
     padding: 4px 8px;
     background: #c0c0c0;
     border-bottom: 1px solid #808080;
+  }
+  .member-filter {
+    padding: 3px 4px;
+    background: #c0c0c0;
+    border-bottom: 1px solid #808080;
+  }
+  .member-filter input {
+    width: 100%;
+    box-sizing: border-box;
+    font-size: 10px;
+    padding: 1px 3px;
   }
   .members-list {
     flex: 1;
