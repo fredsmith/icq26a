@@ -1149,19 +1149,67 @@ pub async fn accept_verification(
         .await
         .map_err(|e| format!("Failed to accept: {}", e))?;
 
-    slog(&app, &log, "info", "Starting SAS verification...".into());
-    let sas = request
-        .start_sas()
-        .await
-        .map_err(|e| format!("Failed to start SAS: {}", e))?
-        .ok_or("Could not start SAS verification")?;
+    slog(&app, &log, "info", "Accepted, waiting to start SAS...".into());
 
-    // Poll for emoji availability (SAS handshake takes a moment)
+    // Spawn a task to start SAS (with retries) and wait for emojis.
+    // After accept(), the ready event needs to propagate via sync before
+    // start_sas() will succeed. The other side may also start SAS first.
     let uid = user_id.to_owned();
     let fid = flow_id.clone();
     let poll_log = log.clone();
+    let poll_client = client.clone();
     tokio::spawn(async move {
-        for i in 0..30 {
+        let mut sas_opt = None;
+
+        // Phase 1: Get SAS started (up to 20s — either we start it or the other side does)
+        for i in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+            // Try to start SAS ourselves
+            match request.start_sas().await {
+                Ok(Some(s)) => {
+                    slog(&app, &poll_log, "info", format!("SAS started by us after {}ms", (i + 1) * 500));
+                    sas_opt = Some(s);
+                    break;
+                }
+                Ok(None) => {
+                    // Check if the other side started SAS
+                    if let Some(verification) = poll_client
+                        .encryption()
+                        .get_verification(&uid, &fid)
+                        .await
+                    {
+                        if let Some(s) = verification.sas() {
+                            slog(&app, &poll_log, "info", format!("SAS started by other side after {}ms", (i + 1) * 500));
+                            sas_opt = Some(s);
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    slog(&app, &poll_log, "warn", format!("start_sas attempt failed: {}", e));
+                }
+            }
+
+            if i % 6 == 5 {
+                slog(&app, &poll_log, "info", format!("Still waiting to start SAS ({}s)...", (i + 1) / 2));
+            }
+        }
+
+        let sas = match sas_opt {
+            Some(s) => s,
+            None => {
+                slog(&app, &poll_log, "warn", "Timed out waiting for SAS to start".into());
+                let _ = app.emit(
+                    "verification_cancelled",
+                    serde_json::json!({ "flow_id": fid, "reason": "Timed out starting SAS" }),
+                );
+                return;
+            }
+        };
+
+        // Phase 2: Wait for emojis (up to 30s — key exchange needs to complete via sync)
+        for i in 0..60 {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             if let Some(emojis) = sas.emoji() {
                 slog(&app, &poll_log, "info", format!("SAS emojis ready after {}ms", (i + 1) * 500));
@@ -1180,7 +1228,7 @@ pub async fn accept_verification(
                 return;
             }
         }
-        slog(&app, &poll_log, "warn", "SAS emoji timeout after 15s".into());
+        slog(&app, &poll_log, "warn", "SAS emoji timeout after 30s".into());
         let _ = app.emit(
             "verification_cancelled",
             serde_json::json!({ "flow_id": fid, "reason": "Timed out waiting for emojis" }),

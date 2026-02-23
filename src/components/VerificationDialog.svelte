@@ -29,14 +29,18 @@
       }
     }))
 
-    unlisteners.push(await listen('verification_done', () => {
-      phase = 'done'
-      setTimeout(() => { visible = false }, 3000)
+    unlisteners.push(await listen<{ flow_id: string; user_id?: string }>('verification_done', (event) => {
+      if (!event.payload.flow_id || event.payload.flow_id === flowId) {
+        phase = 'done'
+        setTimeout(() => { visible = false }, 3000)
+      }
     }))
 
-    unlisteners.push(await listen('verification_cancelled', () => {
-      phase = 'cancelled'
-      setTimeout(() => { visible = false }, 3000)
+    unlisteners.push(await listen<{ flow_id: string; reason?: string }>('verification_cancelled', (event) => {
+      if (!event.payload.flow_id || event.payload.flow_id === flowId) {
+        phase = 'cancelled'
+        setTimeout(() => { visible = false }, 3000)
+      }
     }))
   })
 
