@@ -1,18 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { listen } from '@tauri-apps/api/event'
-  import { buddyList, rooms, activeRoomId, unreadCounts } from '../lib/stores'
+  import { buddyList, rooms, unreadCounts } from '../lib/stores'
   import { getBuddyList, getRooms } from '../lib/matrix'
   import type { Buddy, Message } from '../lib/types'
   import StatusPicker from './StatusPicker.svelte'
-
-  let activeTab = $state<'all' | 'users'>('all')
+  import TitleBar from './TitleBar.svelte'
+  import { openPreferencesWindow, openDirectMessageWindow, openChatRoomWindow } from '../lib/windows'
 
   const onlineBuddies = $derived($buddyList.filter(b => b.presence !== 'offline'))
   const offlineBuddies = $derived($buddyList.filter(b => b.presence === 'offline'))
-  const filteredRooms = $derived($rooms.filter(r => !r.is_direct))
+  const groupRooms = $derived($rooms.filter(r => !r.is_direct))
 
-  onMount(async () => {
+  async function refreshLists() {
     try {
       const fetchedBuddies = await getBuddyList()
       buddyList.set(fetchedBuddies)
@@ -21,29 +21,42 @@
     } catch (e) {
       console.error('Failed to load buddy list:', e)
     }
+  }
 
-    await listen<{ room_id: string; message: Message }>('new_message', (event) => {
+  onMount(async () => {
+    await refreshLists()
+
+    await listen<Message>('new_message', (event) => {
       const roomId = event.payload.room_id
-      if (roomId !== $activeRoomId) {
+      if (roomId) {
         unreadCounts.update(counts => ({
           ...counts,
           [roomId]: (counts[roomId] || 0) + 1,
         }))
       }
     })
+
+    await listen('rooms_changed', () => {
+      refreshLists()
+    })
   })
 
-  function openChat(roomId: string) {
-    activeRoomId.set(roomId)
+  function openBuddyChat(buddy: Buddy) {
+    const room = $rooms.find(r => r.is_direct && r.name === buddy.display_name)
+    if (!room) return
     unreadCounts.update(counts => {
-      const { [roomId]: _, ...rest } = counts
+      const { [room.room_id]: _, ...rest } = counts
       return rest
     })
+    openDirectMessageWindow(room.room_id, buddy.display_name)
   }
 
-  function findRoomForBuddy(buddy: Buddy): string | null {
-    const room = $rooms.find(r => r.is_direct && r.name === buddy.display_name)
-    return room?.room_id ?? null
+  function openRoomChat(room: { room_id: string; name: string }) {
+    unreadCounts.update(counts => {
+      const { [room.room_id]: _, ...rest } = counts
+      return rest
+    })
+    openChatRoomWindow(room.room_id, room.name)
   }
 
   function getUnreadForBuddy(buddy: Buddy): number {
@@ -54,75 +67,46 @@
 </script>
 
 <div class="window buddy-list-window">
-  <div class="title-bar">
-    <div class="title-bar-text">ICQ26a</div>
-    <div class="title-bar-controls">
-      <button aria-label="Minimize"></button>
-      <button aria-label="Close"></button>
-    </div>
-  </div>
+  <TitleBar title="ICQ26a" showMinimize />
   <div class="window-body">
-    <!-- Tab bar -->
-    <menu role="tablist">
-      <button
-        aria-selected={activeTab === 'all'}
-        onclick={() => (activeTab = 'all')}
-      >All</button>
-      <button
-        aria-selected={activeTab === 'users'}
-        onclick={() => (activeTab = 'users')}
-      >Users</button>
-    </menu>
-
-    <!-- Buddy/room list -->
-    <div class="buddy-scroll" role="tabpanel">
-      {#if activeTab === 'all'}
-        {#if onlineBuddies.length > 0}
-          <div class="group-header">Online</div>
-          {#each onlineBuddies as buddy}
-            <button class="buddy-row" onclick={() => {
-              const rid = findRoomForBuddy(buddy)
-              if (rid) openChat(rid)
-            }}>
-              <span class="status-dot online"></span>
-              {buddy.display_name}
-              {#if getUnreadForBuddy(buddy) > 0}
-                <span class="unread-badge">{getUnreadForBuddy(buddy)}</span>
-              {/if}
-            </button>
-          {/each}
-        {/if}
-        {#if offlineBuddies.length > 0}
-          <div class="group-header">Offline</div>
-          {#each offlineBuddies as buddy}
-            <button class="buddy-row offline" onclick={() => {
-              const rid = findRoomForBuddy(buddy)
-              if (rid) openChat(rid)
-            }}>
-              <span class="status-dot"></span>
-              {buddy.display_name}
-              {#if getUnreadForBuddy(buddy) > 0}
-                <span class="unread-badge">{getUnreadForBuddy(buddy)}</span>
-              {/if}
-            </button>
-          {/each}
-        {/if}
-        {#if $buddyList.length === 0}
-          <p class="empty-text">No contacts yet</p>
-        {/if}
-      {:else}
-        <!-- Rooms tab -->
-        {#each filteredRooms as room}
-          <button class="buddy-row" onclick={() => openChat(room.room_id)}>
+    <div class="buddy-scroll">
+      {#if onlineBuddies.length > 0}
+        <div class="group-header">Online</div>
+        {#each onlineBuddies as buddy}
+          <button class="buddy-row" onclick={() => openBuddyChat(buddy)}>
+            <span class="status-dot online"></span>
+            {buddy.display_name}
+            {#if getUnreadForBuddy(buddy) > 0}
+              <span class="unread-badge">{getUnreadForBuddy(buddy)}</span>
+            {/if}
+          </button>
+        {/each}
+      {/if}
+      {#if offlineBuddies.length > 0}
+        <div class="group-header">Offline</div>
+        {#each offlineBuddies as buddy}
+          <button class="buddy-row offline" onclick={() => openBuddyChat(buddy)}>
+            <span class="status-dot"></span>
+            {buddy.display_name}
+            {#if getUnreadForBuddy(buddy) > 0}
+              <span class="unread-badge">{getUnreadForBuddy(buddy)}</span>
+            {/if}
+          </button>
+        {/each}
+      {/if}
+      {#if groupRooms.length > 0}
+        <div class="group-header">Rooms</div>
+        {#each groupRooms as room}
+          <button class="buddy-row" onclick={() => openRoomChat(room)}>
             {room.name}
             {#if $unreadCounts[room.room_id] > 0}
               <span class="unread-badge">{$unreadCounts[room.room_id]}</span>
             {/if}
           </button>
         {/each}
-        {#if filteredRooms.length === 0}
-          <p class="empty-text">No rooms</p>
-        {/if}
+      {/if}
+      {#if $buddyList.length === 0 && groupRooms.length === 0}
+        <p class="empty-text">No contacts or rooms</p>
       {/if}
     </div>
   </div>
@@ -130,15 +114,16 @@
   <!-- Bottom toolbar -->
   <div class="buddy-toolbar">
     <StatusPicker />
+    <button onclick={openPreferencesWindow}>Prefs</button>
   </div>
 </div>
 
 <style>
   .buddy-list-window {
-    width: 220px;
-    height: 500px;
+    height: 100vh;
     display: flex;
     flex-direction: column;
+    box-sizing: border-box;
   }
   .buddy-list-window .window-body {
     flex: 1;
@@ -147,16 +132,12 @@
     overflow: hidden;
     padding: 0;
   }
-  menu[role="tablist"] {
-    margin: 0;
-    padding: 2px 4px 0;
-  }
   .buddy-scroll {
     flex: 1;
     overflow-y: auto;
     background: white;
     border: 2px inset #c0c0c0;
-    margin: 0 4px 4px;
+    margin: 4px;
   }
   .group-header {
     font-weight: bold;
@@ -213,6 +194,9 @@
     padding: 0 3px;
   }
   .buddy-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
     padding: 4px;
     border-top: 1px solid #808080;
   }

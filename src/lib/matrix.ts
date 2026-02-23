@@ -13,6 +13,10 @@ export async function getBuddyList(): Promise<Buddy[]> {
   return invoke('get_buddy_list')
 }
 
+export async function getRoomMembers(roomId: string): Promise<Buddy[]> {
+  return invoke('get_room_members', { roomId })
+}
+
 export async function getRooms(): Promise<Room[]> {
   return invoke('get_rooms')
 }

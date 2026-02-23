@@ -3,6 +3,7 @@
   import { matrixLogin } from '../lib/matrix'
   import { isLoggedIn, currentUserId, preferences } from '../lib/stores'
   import type { LoginCredentials } from '../lib/types'
+  import TitleBar from './TitleBar.svelte'
 
   let username = $state('')
   let password = $state('')
@@ -37,12 +38,7 @@
 </script>
 
 <div class="window login-window">
-  <div class="title-bar">
-    <div class="title-bar-text">ICQ26a Login</div>
-    <div class="title-bar-controls">
-      <button aria-label="Close"></button>
-    </div>
-  </div>
+  <TitleBar title="ICQ26a Login" showMinimize />
   <div class="window-body">
     <div class="login-logo">
       <p style="font-size: 24px; font-weight: bold; text-align: center; margin: 8px 0;">ICQ26a</p>

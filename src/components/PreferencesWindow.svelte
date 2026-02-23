@@ -1,31 +1,23 @@
 <script lang="ts">
+  import { getCurrentWindow } from '@tauri-apps/api/window'
   import { preferences } from '../lib/stores'
   import type { AppPreferences } from '../lib/types'
-
-  interface Props {
-    onclose: () => void
-  }
-  let { onclose }: Props = $props()
+  import TitleBar from './TitleBar.svelte'
 
   let localPrefs = $state<AppPreferences>({ ...$preferences })
 
   function handleSave() {
     preferences.set({ ...localPrefs })
-    onclose()
+    getCurrentWindow().close()
   }
 
   function handleCancel() {
-    onclose()
+    getCurrentWindow().close()
   }
 </script>
 
 <div class="window prefs-window">
-  <div class="title-bar">
-    <div class="title-bar-text">Preferences</div>
-    <div class="title-bar-controls">
-      <button aria-label="Close" onclick={handleCancel}></button>
-    </div>
-  </div>
+  <TitleBar title="Preferences" />
   <div class="window-body">
     <fieldset>
       <legend>Connection</legend>
@@ -53,7 +45,7 @@
 <style>
   .prefs-window {
     width: 350px;
-    margin: 40px auto;
+    margin: 0 auto;
   }
   fieldset {
     margin-bottom: 8px;

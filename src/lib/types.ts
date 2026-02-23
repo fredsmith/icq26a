@@ -24,6 +24,7 @@ export interface Room {
 }
 
 export interface Message {
+  room_id: string
   event_id: string
   sender: string
   sender_name: string

@@ -2,6 +2,21 @@ use crate::matrix_client::{Buddy, LoginCredentials, MatrixState, Message, Room};
 use matrix_sdk::{Client, ServerName};
 use tauri::{Emitter, State};
 
+/// Returns Some(status) on success, None if the server doesn't support presence.
+async fn fetch_user_presence(client: &Client, user_id: &matrix_sdk::ruma::UserId) -> Option<String> {
+    use matrix_sdk::ruma::api::client::presence::get_presence;
+
+    let request = get_presence::v3::Request::new(user_id.to_owned());
+    match client.send(request).await {
+        Ok(response) => Some(match response.presence {
+            matrix_sdk::ruma::presence::PresenceState::Online => "online",
+            matrix_sdk::ruma::presence::PresenceState::Unavailable => "away",
+            _ => "offline",
+        }.to_string()),
+        Err(_) => None,
+    }
+}
+
 #[tauri::command]
 pub async fn matrix_login(
     credentials: LoginCredentials,
@@ -49,6 +64,7 @@ pub async fn get_buddy_list(state: State<'_, MatrixState>) -> Result<Vec<Buddy>,
         .map_err(|e| format!("Sync failed: {}", e))?;
 
     let mut buddies = Vec::new();
+    let mut presence_supported = true;
     for room in client.joined_rooms() {
         if room.is_direct().await.unwrap_or(false) {
             let members = room
@@ -63,15 +79,69 @@ pub async fn get_buddy_list(state: State<'_, MatrixState>) -> Result<Vec<Buddy>,
                         .map(|u| u.to_string())
                         .unwrap_or_default()
                 {
+                    let presence = if presence_supported {
+                        match fetch_user_presence(client, member.user_id()).await {
+                            Some(p) => p,
+                            None => {
+                                presence_supported = false;
+                                "offline".to_string()
+                            }
+                        }
+                    } else {
+                        "offline".to_string()
+                    };
                     buddies.push(Buddy {
                         user_id: user_id.clone(),
                         display_name: member.display_name().unwrap_or(&user_id).to_string(),
                         avatar_url: member.avatar_url().map(|u| u.to_string()),
-                        presence: "offline".to_string(),
+                        presence,
                     });
                 }
             }
         }
+    }
+    Ok(buddies)
+}
+
+#[tauri::command]
+pub async fn get_room_members(
+    room_id: String,
+    state: State<'_, MatrixState>,
+) -> Result<Vec<Buddy>, String> {
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let room_id = matrix_sdk::ruma::OwnedRoomId::try_from(room_id.as_str())
+        .map_err(|e| format!("Invalid room ID: {}", e))?;
+
+    let room = client.get_room(&room_id).ok_or("Room not found")?;
+
+    let members = room
+        .members(matrix_sdk::RoomMemberships::ACTIVE)
+        .await
+        .map_err(|e| format!("Failed to get members: {}", e))?;
+
+    let mut buddies = Vec::new();
+    let mut presence_supported = true;
+    for member in members {
+        let user_id = member.user_id().to_string();
+        let presence = if presence_supported {
+            match fetch_user_presence(client, member.user_id()).await {
+                Some(p) => p,
+                None => {
+                    presence_supported = false;
+                    "offline".to_string()
+                }
+            }
+        } else {
+            "offline".to_string()
+        };
+        buddies.push(Buddy {
+            user_id: user_id.clone(),
+            display_name: member.display_name().unwrap_or(&user_id).to_string(),
+            avatar_url: member.avatar_url().map(|u| u.to_string()),
+            presence,
+        });
     }
     Ok(buddies)
 }
@@ -137,6 +207,7 @@ pub async fn get_room_messages(
                 };
 
                 messages.push(Message {
+                    room_id: room_id.to_string(),
                     event_id: msg.event_id().to_string(),
                     sender: msg.sender().to_string(),
                     sender_name: msg.sender().localpart().to_string(),
@@ -192,10 +263,33 @@ pub async fn start_sync(
 
     let app_handle = app.clone();
 
+    // Poll for room list changes (new rooms joined from other clients)
+    let poll_client = client.clone();
+    let poll_app = app.clone();
+    tokio::spawn(async move {
+        let mut known_ids: std::collections::HashSet<String> = poll_client
+            .joined_rooms()
+            .iter()
+            .map(|r| r.room_id().to_string())
+            .collect();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let current_ids: std::collections::HashSet<String> = poll_client
+                .joined_rooms()
+                .iter()
+                .map(|r| r.room_id().to_string())
+                .collect();
+            if current_ids != known_ids {
+                known_ids = current_ids;
+                let _ = poll_app.emit("rooms_changed", "");
+            }
+        }
+    });
+
     tokio::spawn(async move {
         client.add_event_handler(
             move |event: matrix_sdk::ruma::events::room::message::SyncRoomMessageEvent,
-                  _room: matrix_sdk::Room| {
+                  room: matrix_sdk::Room| {
                 let app = app_handle.clone();
                 async move {
                     if let Some(original) = event.as_original() {
@@ -203,6 +297,7 @@ pub async fn start_sync(
                             &original.content.msgtype
                         {
                             let msg = Message {
+                                room_id: room.room_id().to_string(),
                                 event_id: event.event_id().to_string(),
                                 sender: event.sender().to_string(),
                                 sender_name: event.sender().localpart().to_string(),

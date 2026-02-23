@@ -1,10 +1,17 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte'
-  import { activeRoomId, rooms } from '../lib/stores'
+  import { getCurrentWindow } from '@tauri-apps/api/window'
   import { getRoomMessages, sendMessage } from '../lib/matrix'
   import { invoke } from '@tauri-apps/api/core'
   import { listen } from '@tauri-apps/api/event'
   import type { Message } from '../lib/types'
+  import TitleBar from './TitleBar.svelte'
+
+  interface Props {
+    roomId: string
+    roomName: string
+  }
+  let { roomId, roomName }: Props = $props()
 
   let messages = $state<Message[]>([])
   let newMessage = $state('')
@@ -12,14 +19,12 @@
   let messagesDiv = $state<HTMLDivElement | undefined>(undefined)
   let unlistenNewMsg: (() => void) | null = null
 
-  const roomName = $derived($rooms.find(r => r.room_id === $activeRoomId)?.name ?? 'Unknown')
-
   onMount(async () => {
-    if ($activeRoomId) {
+    if (roomId) {
       await loadMessages()
     }
     unlistenNewMsg = await listen<Message>('new_message', (event) => {
-      if (event.payload.sender !== '') {
+      if (event.payload.room_id === roomId && event.payload.sender !== '') {
         messages = [...messages, event.payload]
         scrollToBottom()
       }
@@ -31,10 +36,10 @@
   })
 
   async function loadMessages() {
-    if (!$activeRoomId) return
+    if (!roomId) return
     loading = true
     try {
-      messages = await getRoomMessages($activeRoomId, 50)
+      messages = await getRoomMessages(roomId, 50)
     } catch (e) {
       console.error('Failed to load messages:', e)
     } finally {
@@ -50,11 +55,11 @@
   }
 
   async function handleSend() {
-    if (!newMessage.trim() || !$activeRoomId) return
+    if (!newMessage.trim() || !roomId) return
     const body = newMessage
     newMessage = ''
     try {
-      await sendMessage($activeRoomId, body)
+      await sendMessage(roomId, body)
     } catch (e) {
       console.error('Failed to send:', e)
       newMessage = body
@@ -62,30 +67,25 @@
   }
 
   async function handleAttach() {
-    if (!$activeRoomId) return
+    if (!roomId) return
     try {
       const { open } = await import('@tauri-apps/plugin-dialog')
       const file = await open({ multiple: false })
       if (file) {
-        await invoke('upload_file', { roomId: $activeRoomId, filePath: file })
+        await invoke('upload_file', { roomId, filePath: file })
       }
     } catch (e) {
       console.error('Failed to attach file:', e)
     }
   }
 
-  function closeChat() {
-    activeRoomId.set(null)
+  function closeWindow() {
+    getCurrentWindow().close()
   }
 </script>
 
 <div class="window dm-window">
-  <div class="title-bar">
-    <div class="title-bar-text">{roomName} - Message Session</div>
-    <div class="title-bar-controls">
-      <button aria-label="Close" onclick={closeChat}></button>
-    </div>
-  </div>
+  <TitleBar title="{roomName} - Message Session" onclose={closeWindow} />
   <div class="window-body">
     <!-- Header fields -->
     <div class="dm-header">
@@ -124,7 +124,7 @@
 
     <!-- Buttons -->
     <div class="dm-buttons">
-      <button onclick={closeChat}>Cancel</button>
+      <button onclick={closeWindow}>Cancel</button>
       <button onclick={handleAttach}>Attach</button>
       <button onclick={handleSend}>Send</button>
     </div>
@@ -133,10 +133,10 @@
 
 <style>
   .dm-window {
-    width: 400px;
-    height: 500px;
     display: flex;
     flex-direction: column;
+    height: 100vh;
+    box-sizing: border-box;
   }
   .dm-window .window-body {
     flex: 1;

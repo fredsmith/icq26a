@@ -15,6 +15,7 @@ pub fn run() {
             commands::matrix_login,
             commands::matrix_logout,
             commands::get_buddy_list,
+            commands::get_room_members,
             commands::get_rooms,
             commands::get_room_messages,
             commands::send_message,

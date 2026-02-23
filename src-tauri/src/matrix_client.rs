@@ -22,6 +22,7 @@ pub struct Room {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
+    pub room_id: String,
     pub event_id: String,
     pub sender: String,
     pub sender_name: String,
