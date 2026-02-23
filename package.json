@@ -10,12 +10,13 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "98.css": "^0.1.18",
-    "@tauri-apps/api": "^2"
+    "@tauri-apps/api": "^2",
+    "98.css": "^0.1.18"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5",
     "@tauri-apps/cli": "^2",
+    "@tsconfig/svelte": "^5.0.8",
     "svelte": "^5",
     "svelte-check": "^4",
     "typescript": "^5",

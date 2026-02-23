@@ -1,14 +1,12 @@
 <script lang="ts">
-  let greeting = 'ICQ26a'
+  import { isLoggedIn } from './lib/stores'
+  import Login from './components/Login.svelte'
 </script>
 
 <main>
-  <div class="window" style="width: 300px; margin: 80px auto;">
-    <div class="title-bar">
-      <div class="title-bar-text">{greeting}</div>
-    </div>
-    <div class="window-body">
-      <p>Welcome to ICQ26a!</p>
-    </div>
-  </div>
+  {#if $isLoggedIn}
+    <p>Logged in! (Buddy list coming next)</p>
+  {:else}
+    <Login />
+  {/if}
 </main>
