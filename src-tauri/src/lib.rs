@@ -1,3 +1,5 @@
+#![recursion_limit = "512"]
+
 mod commands;
 mod matrix_client;
 
@@ -16,6 +18,7 @@ pub fn run() {
             commands::get_room_messages,
             commands::send_message,
             commands::set_presence,
+            commands::start_sync,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

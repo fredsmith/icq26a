@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core'
   import { matrixLogin } from '../lib/matrix'
   import { isLoggedIn, currentUserId, preferences } from '../lib/stores'
   import type { LoginCredentials } from '../lib/types'
@@ -26,6 +27,7 @@
       const userId = await matrixLogin(credentials)
       currentUserId.set(userId)
       isLoggedIn.set(true)
+      await invoke('start_sync')
     } catch (e) {
       error = String(e)
     } finally {

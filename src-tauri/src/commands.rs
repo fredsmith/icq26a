@@ -1,6 +1,6 @@
 use crate::matrix_client::{Buddy, LoginCredentials, MatrixState, Message, Room};
 use matrix_sdk::{Client, ServerName};
-use tauri::State;
+use tauri::{Emitter, State};
 
 #[tauri::command]
 pub async fn matrix_login(
@@ -178,5 +178,48 @@ pub async fn send_message(
 pub async fn set_presence(status: String, state: State<'_, MatrixState>) -> Result<(), String> {
     // Stub — will map ICQ statuses to Matrix presence
     let _ = (status, state);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn start_sync(
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<(), String> {
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?.clone();
+    drop(client_lock);
+
+    let app_handle = app.clone();
+
+    tokio::spawn(async move {
+        client.add_event_handler(
+            move |event: matrix_sdk::ruma::events::room::message::SyncRoomMessageEvent,
+                  _room: matrix_sdk::Room| {
+                let app = app_handle.clone();
+                async move {
+                    if let Some(original) = event.as_original() {
+                        if let matrix_sdk::ruma::events::room::message::MessageType::Text(text) =
+                            &original.content.msgtype
+                        {
+                            let msg = Message {
+                                event_id: event.event_id().to_string(),
+                                sender: event.sender().to_string(),
+                                sender_name: event.sender().localpart().to_string(),
+                                body: text.body.clone(),
+                                timestamp: event.origin_server_ts().as_secs().into(),
+                                msg_type: "text".to_string(),
+                            };
+                            let _ = app.emit("new_message", &msg);
+                        }
+                    }
+                }
+            },
+        );
+
+        let settings = matrix_sdk::config::SyncSettings::default();
+        let _ = client.sync(settings).await;
+    });
+
     Ok(())
 }
