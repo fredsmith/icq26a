@@ -104,9 +104,51 @@ pub async fn get_room_messages(
     limit: u64,
     state: State<'_, MatrixState>,
 ) -> Result<Vec<Message>, String> {
-    // Stub — will be implemented with timeline API
-    let _ = (room_id, limit, state);
-    Ok(Vec::new())
+    let _ = limit;
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let room_id = matrix_sdk::ruma::OwnedRoomId::try_from(room_id.as_str())
+        .map_err(|e| format!("Invalid room ID: {}", e))?;
+
+    let room = client.get_room(&room_id).ok_or("Room not found")?;
+
+    let options = matrix_sdk::room::MessagesOptions::backward();
+    let messages_response = room
+        .messages(options)
+        .await
+        .map_err(|e| format!("Failed to get messages: {}", e))?;
+
+    let mut messages = Vec::new();
+    for event in messages_response.chunk {
+        if let Ok(timeline_event) = event.raw().deserialize() {
+            if let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+                matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(msg),
+            ) = timeline_event
+            {
+                let (body, msg_type) = match msg.as_original() {
+                    Some(original) => match &original.content.msgtype {
+                        matrix_sdk::ruma::events::room::message::MessageType::Text(text) => {
+                            (text.body.clone(), "text".to_string())
+                        }
+                        _ => (String::new(), "unknown".to_string()),
+                    },
+                    None => (String::new(), "unknown".to_string()),
+                };
+
+                messages.push(Message {
+                    event_id: msg.event_id().to_string(),
+                    sender: msg.sender().to_string(),
+                    sender_name: msg.sender().localpart().to_string(),
+                    body,
+                    timestamp: msg.origin_server_ts().as_secs().into(),
+                    msg_type,
+                });
+            }
+        }
+    }
+    messages.reverse();
+    Ok(messages)
 }
 
 #[tauri::command]

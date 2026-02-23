@@ -2,12 +2,16 @@
   import { isLoggedIn, activeRoomId } from './lib/stores'
   import Login from './components/Login.svelte'
   import BuddyList from './components/BuddyList.svelte'
+  import DirectMessage from './components/DirectMessage.svelte'
 </script>
 
 <main>
   {#if $isLoggedIn}
     <div class="app-layout">
       <BuddyList />
+      {#if $activeRoomId}
+        <DirectMessage />
+      {/if}
     </div>
   {:else}
     <Login />
