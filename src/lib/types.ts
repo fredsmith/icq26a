@@ -30,7 +30,14 @@ export interface Message {
   sender_name: string
   body: string
   timestamp: number
-  msg_type: 'text' | 'image' | 'file' | 'audio' | 'video'
+  msg_type: 'text' | 'image' | 'file' | 'audio' | 'video' | 'unknown'
+  media_url?: string | null
+  filename?: string | null
+}
+
+export interface MessagesPage {
+  messages: Message[]
+  end_token: string | null
 }
 
 export interface SharedRoom {

@@ -1,5 +1,5 @@
 use crate::matrix_client::{
-    Buddy, LogEntry, LoginCredentials, MatrixState, Message, PersistedSession, Room,
+    Buddy, LogEntry, LoginCredentials, MatrixState, Message, MessagesPage, PersistedSession, Room,
     RoomProfile, ServerLog, SharedRoom, UserProfile, VerificationEmoji,
     VerificationEmojisEvent, VerificationEvent,
 };
@@ -35,6 +35,14 @@ fn mxc_to_http(homeserver: &str, mxc_url: &str) -> Option<String> {
         server_name,
         media_id,
     ))
+}
+
+/// Extract the mxc:// URL string from a MediaSource (plain only; encrypted media not supported).
+fn media_source_to_mxc(source: &matrix_sdk::ruma::events::room::MediaSource) -> Option<String> {
+    match source {
+        matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => Some(uri.to_string()),
+        _ => None,
+    }
 }
 
 /// Fetch an mxc:// avatar as a base64 data URL using authenticated media endpoints.
@@ -913,12 +921,12 @@ pub async fn get_rooms(
 pub async fn get_room_messages(
     room_id: String,
     limit: u64,
+    from: Option<String>,
     app: tauri::AppHandle,
     state: State<'_, MatrixState>,
-) -> Result<Vec<Message>, String> {
-    let _ = limit;
+) -> Result<MessagesPage, String> {
     let log = state.log.clone();
-    slog(&app, &log, "info", format!("get_room_messages: {}", room_id));
+    slog(&app, &log, "info", format!("get_room_messages: {} (from={:?})", room_id, from));
 
     let client_lock = state.client.lock().await;
     let client = client_lock.as_ref().ok_or("Not logged in")?;
@@ -929,7 +937,13 @@ pub async fn get_room_messages(
     let room = client.get_room(&room_id).ok_or("Room not found")?;
 
     slog(&app, &log, "info", "Fetching messages from server...".into());
-    let options = matrix_sdk::room::MessagesOptions::backward();
+    let mut options = matrix_sdk::room::MessagesOptions::backward();
+    if let Some(ref token) = from {
+        options.from = Some(token.clone());
+    }
+    if let Some(l) = matrix_sdk::ruma::UInt::new(limit) {
+        options.limit = l;
+    }
     let messages_response = with_heartbeat(
         &app, &log, "messages",
         room.messages(options),
@@ -940,6 +954,8 @@ pub async fn get_room_messages(
             format!("Failed to get messages: {}", e)
         })?;
 
+    let end_token = messages_response.end;
+
     let mut messages = Vec::new();
     for event in messages_response.chunk {
         if let Ok(timeline_event) = event.raw().deserialize() {
@@ -947,14 +963,27 @@ pub async fn get_room_messages(
                 matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(msg),
             ) = timeline_event
             {
-                let (body, msg_type) = match msg.as_original() {
+                let (body, msg_type, media_url, filename) = match msg.as_original() {
                     Some(original) => match &original.content.msgtype {
                         matrix_sdk::ruma::events::room::message::MessageType::Text(text) => {
-                            (text.body.clone(), "text".to_string())
+                            (text.body.clone(), "text".to_string(), None, None)
                         }
-                        _ => (String::new(), "unknown".to_string()),
+                        matrix_sdk::ruma::events::room::message::MessageType::Image(img) => {
+                            (img.body.clone(), "image".to_string(), media_source_to_mxc(&img.source), Some(img.body.clone()))
+                        }
+                        matrix_sdk::ruma::events::room::message::MessageType::File(file) => {
+                            let fname = file.filename.clone().unwrap_or_else(|| file.body.clone());
+                            (file.body.clone(), "file".to_string(), media_source_to_mxc(&file.source), Some(fname))
+                        }
+                        matrix_sdk::ruma::events::room::message::MessageType::Audio(audio) => {
+                            (audio.body.clone(), "audio".to_string(), media_source_to_mxc(&audio.source), Some(audio.body.clone()))
+                        }
+                        matrix_sdk::ruma::events::room::message::MessageType::Video(video) => {
+                            (video.body.clone(), "video".to_string(), media_source_to_mxc(&video.source), Some(video.body.clone()))
+                        }
+                        _ => (String::new(), "unknown".to_string(), None, None),
                     },
-                    None => (String::new(), "unknown".to_string()),
+                    None => (String::new(), "unknown".to_string(), None, None),
                 };
 
                 messages.push(Message {
@@ -965,13 +994,15 @@ pub async fn get_room_messages(
                     body,
                     timestamp: msg.origin_server_ts().as_secs().into(),
                     msg_type,
+                    media_url,
+                    filename,
                 });
             }
         }
     }
     messages.reverse();
     slog(&app, &log, "info", format!("get_room_messages: returning {} messages", messages.len()));
-    Ok(messages)
+    Ok(MessagesPage { messages, end_token })
 }
 
 #[tauri::command]
@@ -1098,20 +1129,37 @@ pub async fn start_sync(
                 let app = app_handle.clone();
                 async move {
                     if let Some(original) = event.as_original() {
-                        if let matrix_sdk::ruma::events::room::message::MessageType::Text(text) =
-                            &original.content.msgtype
-                        {
-                            let msg = Message {
-                                room_id: room.room_id().to_string(),
-                                event_id: event.event_id().to_string(),
-                                sender: event.sender().to_string(),
-                                sender_name: event.sender().localpart().to_string(),
-                                body: text.body.clone(),
-                                timestamp: event.origin_server_ts().as_secs().into(),
-                                msg_type: "text".to_string(),
-                            };
-                            let _ = app.emit("new_message", &msg);
-                        }
+                        let (body, msg_type, media_url, filename) = match &original.content.msgtype {
+                            matrix_sdk::ruma::events::room::message::MessageType::Text(text) => {
+                                (text.body.clone(), "text".to_string(), None, None)
+                            }
+                            matrix_sdk::ruma::events::room::message::MessageType::Image(img) => {
+                                (img.body.clone(), "image".to_string(), media_source_to_mxc(&img.source), Some(img.body.clone()))
+                            }
+                            matrix_sdk::ruma::events::room::message::MessageType::File(file) => {
+                                let fname = file.filename.clone().unwrap_or_else(|| file.body.clone());
+                                (file.body.clone(), "file".to_string(), media_source_to_mxc(&file.source), Some(fname))
+                            }
+                            matrix_sdk::ruma::events::room::message::MessageType::Audio(audio) => {
+                                (audio.body.clone(), "audio".to_string(), media_source_to_mxc(&audio.source), Some(audio.body.clone()))
+                            }
+                            matrix_sdk::ruma::events::room::message::MessageType::Video(video) => {
+                                (video.body.clone(), "video".to_string(), media_source_to_mxc(&video.source), Some(video.body.clone()))
+                            }
+                            _ => return,
+                        };
+                        let msg = Message {
+                            room_id: room.room_id().to_string(),
+                            event_id: event.event_id().to_string(),
+                            sender: event.sender().to_string(),
+                            sender_name: event.sender().localpart().to_string(),
+                            body,
+                            timestamp: event.origin_server_ts().as_secs().into(),
+                            msg_type,
+                            media_url,
+                            filename,
+                        };
+                        let _ = app.emit("new_message", &msg);
                     }
                 }
             },
@@ -1184,6 +1232,61 @@ pub async fn upload_file(
 
     slog(&app, &log, "info", "File sent OK".into());
     Ok(())
+}
+
+#[tauri::command]
+pub async fn fetch_media(
+    mxc_url: String,
+    state: State<'_, MatrixState>,
+) -> Result<String, String> {
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let path = mxc_url.strip_prefix("mxc://")
+        .ok_or("Invalid mxc:// URL")?;
+    let (server_name, media_id) = path.split_once('/')
+        .ok_or("Invalid mxc URL format")?;
+
+    let hs = client.homeserver().to_string();
+    let hs = hs.trim_end_matches('/');
+    let access_token = client.access_token()
+        .ok_or("No access token available")?;
+
+    // Try authenticated endpoint first, then unauthenticated fallback
+    let urls = [
+        format!("{}/_matrix/client/v1/media/download/{}/{}", hs, server_name, media_id),
+        format!("{}/_matrix/media/v3/download/{}/{}", hs, server_name, media_id),
+    ];
+
+    let http = reqwest::Client::new();
+    for url in &urls {
+        if let Ok(resp) = http.get(url)
+            .header("Authorization", format!("Bearer {}", access_token))
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                if let Ok(bytes) = resp.bytes().await {
+                    if bytes.is_empty() { continue; }
+                    let content_type = if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+                        "image/png"
+                    } else if bytes.starts_with(&[0xFF, 0xD8]) {
+                        "image/jpeg"
+                    } else if bytes.starts_with(b"GIF") {
+                        "image/gif"
+                    } else if bytes.starts_with(b"RIFF") {
+                        "image/webp"
+                    } else {
+                        "application/octet-stream"
+                    };
+                    use base64::Engine;
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                    return Ok(format!("data:{};base64,{}", content_type, b64));
+                }
+            }
+        }
+    }
+    Err("Failed to fetch media from any endpoint".into())
 }
 
 #[tauri::command]

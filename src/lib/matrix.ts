@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Buddy, Room, Message, LoginCredentials, LogEntry, UserProfile, RoomProfile } from './types'
+import type { Buddy, Room, Message, MessagesPage, LoginCredentials, LogEntry, UserProfile, RoomProfile } from './types'
 
 export async function matrixLogin(credentials: LoginCredentials): Promise<string> {
   return invoke('matrix_login', { credentials })
@@ -29,8 +29,8 @@ export async function getRooms(): Promise<Room[]> {
   return invoke('get_rooms')
 }
 
-export async function getRoomMessages(roomId: string, limit: number = 50): Promise<Message[]> {
-  return invoke('get_room_messages', { roomId, limit })
+export async function getRoomMessages(roomId: string, limit: number = 50, from?: string): Promise<MessagesPage> {
+  return invoke('get_room_messages', { roomId, limit, from: from ?? null })
 }
 
 export async function sendMessage(roomId: string, body: string): Promise<void> {
@@ -91,4 +91,8 @@ export async function leaveRoom(roomId: string): Promise<void> {
 
 export async function removeBuddy(userId: string): Promise<void> {
   return invoke('remove_buddy', { userId })
+}
+
+export async function fetchMedia(mxcUrl: string): Promise<string> {
+  return invoke('fetch_media', { mxcUrl })
 }

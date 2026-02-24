@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte'
+  import { onMount, onDestroy, tick } from 'svelte'
   import { getCurrentWindow } from '@tauri-apps/api/window'
-  import { getRoomMessages, getRoomMembers, sendMessage } from '../lib/matrix'
+  import { getRoomMessages, getRoomMembers, sendMessage, fetchMedia } from '../lib/matrix'
   import { invoke } from '@tauri-apps/api/core'
   import { listen } from '@tauri-apps/api/event'
   import type { Message } from '../lib/types'
   import { openUserInfoWindow } from '../lib/windows'
+  import { linkify } from '../lib/linkify'
   import TitleBar from './TitleBar.svelte'
 
   interface Props {
@@ -17,9 +18,12 @@
   let messages = $state<Message[]>([])
   let newMessage = $state('')
   let loading = $state(true)
+  let loadingOlder = $state(false)
+  let endToken = $state<string | null>(null)
   let messagesDiv = $state<HTMLDivElement | undefined>(undefined)
   let unlistenNewMsg: (() => void) | null = null
   let dmUserId = $state<string | null>(null)
+  let showNewMsgHint = $state(false)
 
   onMount(async () => {
     if (roomId) {
@@ -35,7 +39,11 @@
     unlistenNewMsg = await listen<Message>('new_message', (event) => {
       if (event.payload.room_id === roomId && event.payload.sender !== '') {
         messages = [...messages, event.payload]
-        scrollToBottom()
+        if (isNearBottom()) {
+          scrollToBottom()
+        } else {
+          showNewMsgHint = true
+        }
       }
     })
   })
@@ -48,13 +56,56 @@
     if (!roomId) return
     loading = true
     try {
-      messages = await getRoomMessages(roomId, 50)
+      const page = await getRoomMessages(roomId, 50)
+      messages = page.messages
+      endToken = page.end_token
     } catch (e) {
       console.error('Failed to load messages:', e)
     } finally {
       loading = false
       scrollToBottom()
     }
+  }
+
+  async function loadOlderMessages() {
+    if (!roomId || !endToken || loadingOlder) return
+    loadingOlder = true
+    try {
+      const el = messagesDiv!
+      const prevHeight = el.scrollHeight
+      const page = await getRoomMessages(roomId, 50, endToken)
+      if (page.messages.length > 0) {
+        messages = [...page.messages, ...messages]
+        endToken = page.end_token
+        await tick()
+        el.scrollTop = el.scrollHeight - prevHeight
+      } else {
+        endToken = null
+      }
+    } catch (e) {
+      console.error('Failed to load older messages:', e)
+    } finally {
+      loadingOlder = false
+    }
+  }
+
+  function isNearBottom(): boolean {
+    if (!messagesDiv) return true
+    return messagesDiv.scrollHeight - messagesDiv.scrollTop - messagesDiv.clientHeight < 60
+  }
+
+  function handleScroll() {
+    if (messagesDiv && messagesDiv.scrollTop < 50 && endToken && !loadingOlder) {
+      loadOlderMessages()
+    }
+    if (isNearBottom()) {
+      showNewMsgHint = false
+    }
+  }
+
+  function jumpToBottom() {
+    showNewMsgHint = false
+    scrollToBottom()
   }
 
   function scrollToBottom() {
@@ -88,6 +139,42 @@
     }
   }
 
+  function loadMedia(node: HTMLImageElement, mxcUrl: string) {
+    fetchMedia(mxcUrl).then(dataUrl => { node.src = dataUrl }).catch(() => {
+      node.alt = 'Failed to load image'
+    })
+    return {
+      update(newUrl: string) {
+        fetchMedia(newUrl).then(dataUrl => { node.src = dataUrl }).catch(() => {})
+      }
+    }
+  }
+
+  function downloadFile(node: HTMLAnchorElement, params: { mxcUrl: string; filename: string }) {
+    let current = params
+    node.href = '#'
+    node.onclick = async (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      try {
+        const dataUrl = await fetchMedia(current.mxcUrl)
+        const a = document.createElement('a')
+        a.href = dataUrl
+        a.download = current.filename
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+      } catch {
+        console.error('Failed to download file')
+      }
+    }
+    return {
+      update(newParams: { mxcUrl: string; filename: string }) {
+        current = newParams
+      }
+    }
+  }
+
   function closeWindow() {
     getCurrentWindow().close()
   }
@@ -108,18 +195,32 @@
     </div>
 
     <!-- Messages area -->
-    <div class="messages-area" bind:this={messagesDiv}>
-      {#if loading}
-        <p class="loading-text">Loading messages...</p>
-      {:else if messages.length === 0}
-        <p class="empty-text">No messages yet</p>
-      {:else}
-        {#each messages as msg}
-          <div class="message">
-            <span class="message-sender">{msg.sender_name}:</span>
-            <span class="message-body">{msg.body}</span>
-          </div>
-        {/each}
+    <div class="messages-wrap">
+      <div class="messages-area" bind:this={messagesDiv} onscroll={handleScroll}>
+        {#if loadingOlder}
+          <p class="loading-text">Loading older messages...</p>
+        {/if}
+        {#if loading}
+          <p class="loading-text">Loading messages...</p>
+        {:else if messages.length === 0}
+          <p class="empty-text">No messages yet</p>
+        {:else}
+          {#each messages as msg}
+            <div class="message">
+              <span class="message-sender">{msg.sender_name}:</span>
+              {#if msg.msg_type === 'image' && msg.media_url}
+                <span class="message-body"><img class="message-image" use:loadMedia={msg.media_url} alt={msg.filename || msg.body} /></span>
+              {:else if (msg.msg_type === 'file' || msg.msg_type === 'audio' || msg.msg_type === 'video') && msg.media_url}
+                <span class="message-body"><a class="message-file" use:downloadFile={{ mxcUrl: msg.media_url, filename: msg.filename || msg.body }}>{msg.filename || msg.body}</a></span>
+              {:else}
+                <span class="message-body">{@html linkify(msg.body)}</span>
+              {/if}
+            </div>
+          {/each}
+        {/if}
+      </div>
+      {#if showNewMsgHint}
+        <button class="new-msg-hint" onclick={jumpToBottom}>New messages below</button>
       {/if}
     </div>
 
@@ -172,6 +273,13 @@
     font-size: 10px;
     padding: 1px 8px;
   }
+  .messages-wrap {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
   .messages-area {
     flex: 1;
     overflow-y: auto;
@@ -180,12 +288,44 @@
     padding: 4px;
     font-size: 11px;
   }
+  .new-msg-hint {
+    position: absolute;
+    bottom: 4px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #000080;
+    color: white;
+    border: 1px solid #c0c0c0;
+    padding: 2px 12px;
+    font-size: 10px;
+    cursor: pointer;
+    z-index: 10;
+    white-space: nowrap;
+  }
+  .new-msg-hint:hover {
+    background: #0000cc;
+  }
   .message {
     margin-bottom: 2px;
   }
   .message-sender {
     font-weight: bold;
     color: #000080;
+  }
+  .message-image {
+    max-width: 200px;
+    max-height: 200px;
+    display: block;
+    margin: 2px 0;
+    cursor: pointer;
+  }
+  .message-file {
+    color: #0000ee;
+    text-decoration: underline;
+  }
+  .message-body :global(a) {
+    color: #0000ee;
+    text-decoration: underline;
   }
   .dm-input {
     padding: 0 4px;
