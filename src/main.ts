@@ -1,6 +1,16 @@
 import '98.css'
 import './app.css'
 import { mount } from 'svelte'
+import { open } from '@tauri-apps/plugin-shell'
+
+// Intercept clicks on <a target="_blank"> to open in system browser
+document.addEventListener('click', (e) => {
+  const anchor = (e.target as HTMLElement).closest('a[target="_blank"]') as HTMLAnchorElement | null
+  if (anchor?.href) {
+    e.preventDefault()
+    open(anchor.href)
+  }
+})
 
 const params = new URLSearchParams(window.location.search)
 const windowType = params.get('window')

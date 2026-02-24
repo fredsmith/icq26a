@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte'
+  import { onMount, onDestroy, tick } from 'svelte'
   import { getCurrentWindow } from '@tauri-apps/api/window'
-  import { getRoomMessages, getRoomMembers, sendMessage, getRooms, createDmRoom } from '../lib/matrix'
+  import { getRoomMessages, getRoomMembers, sendMessage, getRooms, createDmRoom, fetchMedia } from '../lib/matrix'
   import { listen } from '@tauri-apps/api/event'
   import { ask } from '@tauri-apps/plugin-dialog'
   import type { Message, Buddy } from '../lib/types'
   import { openUserInfoWindow, openDirectMessageWindow, openRoomInfoWindow } from '../lib/windows'
+  import { linkify } from '../lib/linkify'
   import TitleBar from './TitleBar.svelte'
 
   interface Props {
@@ -19,8 +20,11 @@
   let newMessage = $state('')
   let memberFilter = $state('')
   let loading = $state(true)
+  let loadingOlder = $state(false)
+  let endToken = $state<string | null>(null)
   let messagesDiv = $state<HTMLDivElement | undefined>(undefined)
   let unlistenNewMsg: (() => void) | null = null
+  let showNewMsgHint = $state(false)
 
   // Sort members by most recent message, then filter by search term
   const sortedFilteredMembers = $derived.by(() => {
@@ -51,11 +55,12 @@
     if (roomId) {
       loading = true
       try {
-        const [msgs, mems] = await Promise.all([
+        const [page, mems] = await Promise.all([
           getRoomMessages(roomId, 50),
           getRoomMembers(roomId),
         ])
-        messages = msgs
+        messages = page.messages
+        endToken = page.end_token
         members = mems
       } catch (e) {
         console.error('Failed to load room data:', e)
@@ -67,7 +72,11 @@
     unlistenNewMsg = await listen<Message>('new_message', (event) => {
       if (event.payload.room_id === roomId && event.payload.sender !== '') {
         messages = [...messages, event.payload]
-        scrollToBottom()
+        if (isNearBottom()) {
+          scrollToBottom()
+        } else {
+          showNewMsgHint = true
+        }
       }
     })
   })
@@ -75,6 +84,47 @@
   onDestroy(() => {
     if (unlistenNewMsg) unlistenNewMsg()
   })
+
+  async function loadOlderMessages() {
+    if (!roomId || !endToken || loadingOlder) return
+    loadingOlder = true
+    try {
+      const el = messagesDiv!
+      const prevHeight = el.scrollHeight
+      const page = await getRoomMessages(roomId, 50, endToken)
+      if (page.messages.length > 0) {
+        messages = [...page.messages, ...messages]
+        endToken = page.end_token
+        await tick()
+        el.scrollTop = el.scrollHeight - prevHeight
+      } else {
+        endToken = null
+      }
+    } catch (e) {
+      console.error('Failed to load older messages:', e)
+    } finally {
+      loadingOlder = false
+    }
+  }
+
+  function isNearBottom(): boolean {
+    if (!messagesDiv) return true
+    return messagesDiv.scrollHeight - messagesDiv.scrollTop - messagesDiv.clientHeight < 60
+  }
+
+  function handleScroll() {
+    if (messagesDiv && messagesDiv.scrollTop < 50 && endToken && !loadingOlder) {
+      loadOlderMessages()
+    }
+    if (isNearBottom()) {
+      showNewMsgHint = false
+    }
+  }
+
+  function jumpToBottom() {
+    showNewMsgHint = false
+    scrollToBottom()
+  }
 
   function scrollToBottom() {
     setTimeout(() => {
@@ -135,6 +185,42 @@
     contextMenu = null
   }
 
+  function loadMedia(node: HTMLImageElement, mxcUrl: string) {
+    fetchMedia(mxcUrl).then(dataUrl => { node.src = dataUrl }).catch(() => {
+      node.alt = 'Failed to load image'
+    })
+    return {
+      update(newUrl: string) {
+        fetchMedia(newUrl).then(dataUrl => { node.src = dataUrl }).catch(() => {})
+      }
+    }
+  }
+
+  function downloadFile(node: HTMLAnchorElement, params: { mxcUrl: string; filename: string }) {
+    let current = params
+    node.href = '#'
+    node.onclick = async (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      try {
+        const dataUrl = await fetchMedia(current.mxcUrl)
+        const a = document.createElement('a')
+        a.href = dataUrl
+        a.download = current.filename
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+      } catch {
+        console.error('Failed to download file')
+      }
+    }
+    return {
+      update(newParams: { mxcUrl: string; filename: string }) {
+        current = newParams
+      }
+    }
+  }
+
   function closeWindow() {
     getCurrentWindow().close()
   }
@@ -151,19 +237,33 @@
   <div class="window-body chat-body">
     <div class="chat-main">
       <!-- Messages pane -->
-      <div class="chat-messages" bind:this={messagesDiv}>
-        {#if loading}
-          <p class="loading-text">Loading...</p>
-        {:else}
-          {#each messages as msg}
-            <div class="chat-message">
-              <div class="chat-message-header">
-                <span class="chat-sender">{msg.sender_name}</span>
-                <span class="chat-time">{formatTime(msg.timestamp)}</span>
+      <div class="messages-wrap">
+        <div class="chat-messages" bind:this={messagesDiv} onscroll={handleScroll}>
+          {#if loadingOlder}
+            <p class="loading-text">Loading older messages...</p>
+          {/if}
+          {#if loading}
+            <p class="loading-text">Loading...</p>
+          {:else}
+            {#each messages as msg}
+              <div class="chat-message">
+                <div class="chat-message-header">
+                  <span class="chat-sender">{msg.sender_name}</span>
+                  <span class="chat-time">{formatTime(msg.timestamp)}</span>
+                </div>
+                {#if msg.msg_type === 'image' && msg.media_url}
+                  <div class="chat-message-body"><img class="message-image" use:loadMedia={msg.media_url} alt={msg.filename || msg.body} /></div>
+                {:else if (msg.msg_type === 'file' || msg.msg_type === 'audio' || msg.msg_type === 'video') && msg.media_url}
+                  <div class="chat-message-body"><a class="message-file" use:downloadFile={{ mxcUrl: msg.media_url, filename: msg.filename || msg.body }}>{msg.filename || msg.body}</a></div>
+                {:else}
+                  <div class="chat-message-body">{@html linkify(msg.body)}</div>
+                {/if}
               </div>
-              <div class="chat-message-body">{msg.body}</div>
-            </div>
-          {/each}
+            {/each}
+          {/if}
+        </div>
+        {#if showNewMsgHint}
+          <button class="new-msg-hint" onclick={jumpToBottom}>New messages below</button>
         {/if}
       </div>
 
@@ -231,6 +331,13 @@
     flex-direction: column;
     overflow: hidden;
   }
+  .messages-wrap {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
   .chat-messages {
     flex: 1;
     overflow-y: auto;
@@ -239,6 +346,24 @@
     padding: 4px;
     font-size: 11px;
     font-family: 'Courier New', monospace;
+  }
+  .new-msg-hint {
+    position: absolute;
+    bottom: 4px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #003366;
+    color: #66ccff;
+    border: 1px solid #66ccff;
+    padding: 2px 12px;
+    font-size: 10px;
+    cursor: pointer;
+    z-index: 10;
+    white-space: nowrap;
+    font-family: 'Courier New', monospace;
+  }
+  .new-msg-hint:hover {
+    background: #004488;
   }
   .chat-message {
     margin-bottom: 4px;
@@ -257,6 +382,21 @@
   }
   .chat-message-body {
     padding-left: 8px;
+  }
+  .message-image {
+    max-width: 200px;
+    max-height: 200px;
+    display: block;
+    margin: 2px 0;
+    cursor: pointer;
+  }
+  .message-file {
+    color: #66ccff;
+    text-decoration: underline;
+  }
+  .chat-message-body :global(a) {
+    color: #66ccff;
+    text-decoration: underline;
   }
   .chat-input {
     display: flex;

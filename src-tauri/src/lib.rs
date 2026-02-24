@@ -49,6 +49,7 @@ pub fn run() {
             commands::set_presence,
             commands::start_sync,
             commands::upload_file,
+            commands::fetch_media,
             commands::get_server_log,
             commands::accept_verification,
             commands::confirm_verification,

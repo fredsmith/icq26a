@@ -30,6 +30,14 @@ pub struct Message {
     pub body: String,
     pub timestamp: u64,
     pub msg_type: String,
+    pub media_url: Option<String>,
+    pub filename: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessagesPage {
+    pub messages: Vec<Message>,
+    pub end_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
