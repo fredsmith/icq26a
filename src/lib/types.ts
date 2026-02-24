@@ -52,6 +52,27 @@ export interface MessageEditEvent {
   sender_name: string
 }
 
+export interface MessageDeletedEvent {
+  room_id: string
+  event_id: string
+}
+
+export interface ReactionEvent {
+  room_id: string
+  event_id: string
+  reaction_key: string
+  sender: string
+  sender_name: string
+  relates_to: string
+}
+
+export interface InviteInfo {
+  room_id: string
+  room_name: string | null
+  inviter: string | null
+  inviter_name: string | null
+}
+
 export interface MessagesPage {
   messages: Message[]
   end_token: string | null

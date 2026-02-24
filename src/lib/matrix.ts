@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Buddy, Room, Message, MessagesPage, LoginCredentials, LogEntry, UserProfile, RoomProfile } from './types'
+import type { Buddy, Room, Message, MessagesPage, LoginCredentials, LogEntry, UserProfile, RoomProfile, InviteInfo } from './types'
 
 export async function matrixLogin(credentials: LoginCredentials): Promise<string> {
   return invoke('matrix_login', { credentials })
@@ -99,6 +99,34 @@ export async function leaveRoom(roomId: string): Promise<void> {
 
 export async function removeBuddy(userId: string): Promise<void> {
   return invoke('remove_buddy', { userId })
+}
+
+export async function editMessage(roomId: string, eventId: string, newBody: string): Promise<void> {
+  return invoke('edit_message', { roomId, eventId, newBody })
+}
+
+export async function deleteMessage(roomId: string, eventId: string): Promise<void> {
+  return invoke('delete_message', { roomId, eventId })
+}
+
+export async function sendReaction(roomId: string, eventId: string, reactionKey: string): Promise<void> {
+  return invoke('send_reaction', { roomId, eventId, reactionKey })
+}
+
+export async function getPendingInvites(): Promise<InviteInfo[]> {
+  return invoke('get_pending_invites')
+}
+
+export async function acceptInvite(roomId: string): Promise<Room> {
+  return invoke('accept_invite', { roomId })
+}
+
+export async function rejectInvite(roomId: string): Promise<void> {
+  return invoke('reject_invite', { roomId })
+}
+
+export async function setDockBadge(count: number): Promise<void> {
+  return invoke('set_dock_badge', { count })
 }
 
 export async function fetchMedia(mxcUrl: string): Promise<string> {

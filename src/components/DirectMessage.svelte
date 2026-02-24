@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte'
   import { getCurrentWindow } from '@tauri-apps/api/window'
-  import { getRoomMessages, getRoomMembers, sendMessage, sendTyping, markAsRead, fetchMedia } from '../lib/matrix'
+  import { getRoomMessages, getRoomMembers, sendMessage, sendTyping, markAsRead, fetchMedia, editMessage, deleteMessage, sendReaction } from '../lib/matrix'
   import { invoke } from '@tauri-apps/api/core'
   import { listen } from '@tauri-apps/api/event'
   import { emit } from '@tauri-apps/api/event'
-  import type { Message, TypingEvent, MessageEditEvent } from '../lib/types'
+  import type { Message, TypingEvent, MessageEditEvent, MessageDeletedEvent, ReactionEvent } from '../lib/types'
   import { openUserInfoWindow } from '../lib/windows'
   import { linkify } from '../lib/linkify'
   import TitleBar from './TitleBar.svelte'
@@ -23,6 +23,7 @@
   let endToken = $state<string | null>(null)
   let messagesDiv = $state<HTMLDivElement | undefined>(undefined)
   let dmUserId = $state<string | null>(null)
+  let myUserId = $state<string | null>(null)
   let showNewMsgHint = $state(false)
 
   // Typing indicator state
@@ -37,6 +38,12 @@
   // Reply state
   let replyTo = $state<Message | null>(null)
 
+  // Edit state
+  let editingMsg = $state<Message | null>(null)
+
+  // Reactions state: event_id -> { key -> Set<sender_name> }
+  let reactions = $state<Record<string, Record<string, Set<string>>>>({})
+
   // Message context menu
   let msgContextMenu = $state<{ x: number; y: number; msg: Message } | null>(null)
 
@@ -50,6 +57,7 @@
       try {
         const members = await getRoomMembers(roomId)
         const myId = await invoke<string>('try_restore_session').catch(() => null)
+        myUserId = myId
         const other = members.find(m => m.user_id !== myId)
         if (other) dmUserId = other.user_id
       } catch { /* ignore */ }
@@ -87,6 +95,26 @@
     unlisteners.push(await listen<TypingEvent>('typing', (event) => {
       if (event.payload.room_id === roomId) {
         typingUsers = event.payload.display_names
+      }
+    }))
+
+    // Listen for message deletions
+    unlisteners.push(await listen<MessageDeletedEvent>('message_deleted', (event) => {
+      if (event.payload.room_id === roomId) {
+        messages = messages.filter(msg => msg.event_id !== event.payload.event_id)
+      }
+    }))
+
+    // Listen for reactions
+    unlisteners.push(await listen<ReactionEvent>('reaction', (event) => {
+      if (event.payload.room_id === roomId) {
+        const eventId = event.payload.relates_to
+        const key = event.payload.reaction_key
+        const sender = event.payload.sender_name
+        reactions = { ...reactions }
+        if (!reactions[eventId]) reactions[eventId] = {}
+        if (!reactions[eventId][key]) reactions[eventId][key] = new Set()
+        reactions[eventId][key].add(sender)
       }
     }))
 
@@ -194,8 +222,10 @@
     if (!newMessage.trim() || !roomId) return
     const body = newMessage
     const replyEventId = replyTo?.event_id
+    const editing = editingMsg
     newMessage = ''
     replyTo = null
+    editingMsg = null
     // Stop typing indicator
     if (typingTimeout) {
       clearTimeout(typingTimeout)
@@ -203,7 +233,12 @@
     }
     sendTyping(roomId, false).catch(() => {})
     try {
-      await sendMessage(roomId, body, replyEventId ?? undefined)
+      if (editing) {
+        await editMessage(roomId, editing.event_id, body)
+        messages = messages.map(m => m.event_id === editing.event_id ? { ...m, body } : m)
+      } else {
+        await sendMessage(roomId, body, replyEventId ?? undefined)
+      }
     } catch (e) {
       console.error('Failed to send:', e)
       newMessage = body
@@ -238,8 +273,40 @@
     msgContextMenu = null
   }
 
+  function handleEdit() {
+    if (!msgContextMenu) return
+    editingMsg = msgContextMenu.msg
+    newMessage = msgContextMenu.msg.body
+    msgContextMenu = null
+  }
+
+  async function handleDelete() {
+    if (!msgContextMenu) return
+    const msg = msgContextMenu.msg
+    msgContextMenu = null
+    try {
+      await deleteMessage(roomId, msg.event_id)
+      messages = messages.filter(m => m.event_id !== msg.event_id)
+    } catch (e) {
+      console.error('Failed to delete:', e)
+    }
+  }
+
+  function cancelEdit() {
+    editingMsg = null
+    newMessage = ''
+  }
+
   function cancelReply() {
     replyTo = null
+  }
+
+  async function handleReaction(eventId: string, key: string) {
+    try {
+      await sendReaction(roomId, eventId, key)
+    } catch (e) {
+      console.error('Failed to react:', e)
+    }
   }
 
   function loadMedia(node: HTMLImageElement, mxcUrl: string) {
@@ -324,6 +391,15 @@
               {:else}
                 <span class="message-body">{@html linkify(msg.body)}</span>
               {/if}
+              {#if reactions[msg.event_id]}
+                <div class="reactions-row">
+                  {#each Object.entries(reactions[msg.event_id]) as [key, senders]}
+                    <button class="reaction-badge" onclick={() => handleReaction(msg.event_id, key)} title={[...senders].join(', ')}>
+                      {key} {senders.size}
+                    </button>
+                  {/each}
+                </div>
+              {/if}
             </div>
           {/each}
         {/if}
@@ -343,6 +419,14 @@
       <div class="reply-preview">
         <span class="reply-preview-text">Reply to <b>{replyTo.sender_name}</b>: {replyTo.body.length > 60 ? replyTo.body.slice(0, 60) + '...' : replyTo.body}</span>
         <button class="reply-preview-cancel" onclick={cancelReply}>X</button>
+      </div>
+    {/if}
+
+    <!-- Edit preview -->
+    {#if editingMsg}
+      <div class="reply-preview">
+        <span class="reply-preview-text">Editing: {editingMsg.body.length > 60 ? editingMsg.body.slice(0, 60) + '...' : editingMsg.body}</span>
+        <button class="reply-preview-cancel" onclick={cancelEdit}>X</button>
       </div>
     {/if}
 
@@ -373,6 +457,12 @@
   </div>
   <div class="context-menu" style="left: {msgContextMenu.x}px; top: {msgContextMenu.y}px;">
     <button class="context-item" onclick={handleReply}>Reply</button>
+    <button class="context-item" onclick={() => { const eid = msgContextMenu!.msg.event_id; closeMsgContextMenu(); handleReaction(eid, '\u{1F44D}') }}>React +1</button>
+    {#if myUserId && msgContextMenu.msg.sender === myUserId}
+      <div class="context-separator"></div>
+      <button class="context-item" onclick={handleEdit}>Edit</button>
+      <button class="context-item danger" onclick={handleDelete}>Delete</button>
+    {/if}
   </div>
 {/if}
 
@@ -553,5 +643,35 @@
   .context-item:hover {
     background: #000080;
     color: white;
+  }
+  .context-item.danger {
+    color: #cc0000;
+  }
+  .context-item.danger:hover {
+    background: #cc0000;
+    color: white;
+  }
+  .context-separator {
+    height: 1px;
+    background: #808080;
+    margin: 2px 4px;
+  }
+  .reactions-row {
+    display: flex;
+    gap: 3px;
+    padding: 1px 0;
+    flex-wrap: wrap;
+  }
+  .reaction-badge {
+    font-size: 10px;
+    padding: 0 4px;
+    border: 1px solid #c0c0c0;
+    background: #e8e8e8;
+    border-radius: 8px;
+    cursor: pointer;
+    line-height: 16px;
+  }
+  .reaction-badge:hover {
+    background: #d0d0ff;
   }
 </style>

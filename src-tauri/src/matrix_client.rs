@@ -54,6 +54,30 @@ pub struct MessageEditEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageDeletedEvent {
+    pub room_id: String,
+    pub event_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReactionEvent {
+    pub room_id: String,
+    pub event_id: String,
+    pub reaction_key: String,
+    pub sender: String,
+    pub sender_name: String,
+    pub relates_to: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InviteInfo {
+    pub room_id: String,
+    pub room_name: Option<String>,
+    pub inviter: Option<String>,
+    pub inviter_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessagesPage {
     pub messages: Vec<Message>,
     pub end_token: Option<String>,
