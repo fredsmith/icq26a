@@ -1,10 +1,10 @@
-# <img src="ref/Logo.png" width="32" height="32" alt="ICQ26a logo" /> ICQ26a
+# <img src="ref/loading-flower.gif" width="32" height="32" alt="ICQ26a logo" /> ICQ26a
 
 A Matrix chat client with the look and feel of ICQ 98a, built with Tauri, Svelte 5, and Rust.
 
-![Login](ref/login.png)
 ![Buddy List & Join Room](ref/add_users.png)
 ![Conversations](ref/conversations.png)
+![Login](ref/login.png)
 
 ## Features
 
@@ -23,45 +23,14 @@ A Matrix chat client with the look and feel of ICQ 98a, built with Tauri, Svelte
 - **Server log** debug window for visibility into backend operations
 - **Windows 95 aesthetic** via [98.css](https://jdan.github.io/98.css/)
 
-## Requirements
 
-- [Node.js](https://nodejs.org/) 20+
-- [Rust](https://rustup.rs/) stable
-- Platform dependencies:
-  - **macOS**: Xcode Command Line Tools
-  - **Linux**: `libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev`
+## Installation
 
-## Development
+Check the [latest release](https://github.com/fredsmith/icq26a/releases) for your platform of choice. 
 
-```bash
-npm install
-npm run tauri dev
-```
+### MacOS special instructions
 
-## Building
-
-```bash
-npm run tauri build
-```
-
-Produces platform-native installers in `src-tauri/target/release/bundle/`.
-
-## Configuration
-
-On first launch, the app connects to `matrix.org` by default. Open **Settings** from the buddy list toolbar to change the homeserver URL before logging in.
-
-Session data is stored in:
-- **macOS**: `~/Library/Application Support/icq26a/`
-- **Linux**: `~/.local/share/icq26a/`
-
-## Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Frontend | Svelte 5, TypeScript, 98.css |
-| Backend | Rust, Tauri v2 |
-| Matrix | matrix-sdk 0.16 (sqlite store, E2EE) |
-
-## License
-
-MIT
+After you download the client, you will need to allowlist it in MacOS's privacy & Security
+screen to run it.  You can also run `xattr -d com.apple.quarantine /Applications/ICQ26a.app`
+in the terminal to allow-list it.  This is required because I am not a paid Apple Developer
+and Apple charges $100/year to bypass this requirement.
