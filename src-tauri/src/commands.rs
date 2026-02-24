@@ -1456,25 +1456,33 @@ pub async fn start_sync(
         slog(&sync_app, &sync_log, "info", "Sync loop starting...".into());
         let _ = sync_app.emit("sync_status", "syncing");
 
-        // Initial sync — fetch room state before entering the continuous loop
-        let settings = matrix_sdk::config::SyncSettings::default();
-        match client.sync_once(settings).await {
-            Ok(response) => {
-                slog(&sync_app, &sync_log, "info", "Initial sync complete".into());
-                let _ = sync_app.emit("sync_status", "synced");
+        let synced_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = synced_flag.clone();
+        let cb_app = sync_app.clone();
+        let cb_log = sync_log.clone();
 
-                // Continue with incremental syncs using the token from initial sync
-                let settings = matrix_sdk::config::SyncSettings::default()
-                    .token(response.next_batch);
-                match client.sync(settings).await {
-                    Ok(_) => slog_buf(&sync_log, "info", "Sync loop ended".into()),
-                    Err(e) => slog_buf(&sync_log, "error", format!("Sync loop error: {}", e)),
+        let settings = matrix_sdk::config::SyncSettings::default();
+        match client.sync_with_result_callback(settings, move |result| {
+            let flag = flag.clone();
+            let app = cb_app.clone();
+            let log = cb_log.clone();
+            async move {
+                match result {
+                    Ok(_) => {
+                        if !flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            slog_buf(&log, "info", "Initial sync complete".into());
+                            let _ = app.emit("sync_status", "synced");
+                        }
+                    }
+                    Err(ref e) => {
+                        slog_buf(&log, "error", format!("Sync error (retrying): {}", e));
+                    }
                 }
+                Ok(matrix_sdk::LoopCtrl::Continue)
             }
-            Err(e) => {
-                slog(&sync_app, &sync_log, "error", format!("Initial sync failed: {}", e));
-                let _ = sync_app.emit("sync_status", "error");
-            }
+        }).await {
+            Ok(_) => slog_buf(&sync_log, "info", "Sync loop ended".into()),
+            Err(e) => slog_buf(&sync_log, "error", format!("Sync loop error: {}", e)),
         }
     });
 
