@@ -64,6 +64,13 @@ pub fn run() {
             commands::remove_buddy,
             commands::send_typing,
             commands::mark_as_read,
+            commands::edit_message,
+            commands::delete_message,
+            commands::send_reaction,
+            commands::get_pending_invites,
+            commands::accept_invite,
+            commands::reject_invite,
+            commands::set_dock_badge,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

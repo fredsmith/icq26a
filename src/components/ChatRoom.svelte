@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte'
   import { getCurrentWindow } from '@tauri-apps/api/window'
-  import { getRoomMessages, getRoomMembers, sendMessage, sendTyping, markAsRead, getRooms, createDmRoom, fetchMedia } from '../lib/matrix'
+  import { getRoomMessages, getRoomMembers, sendMessage, sendTyping, markAsRead, getRooms, createDmRoom, fetchMedia, editMessage, deleteMessage, sendReaction } from '../lib/matrix'
+  import { invoke } from '@tauri-apps/api/core'
   import { listen } from '@tauri-apps/api/event'
   import { emit } from '@tauri-apps/api/event'
   import { ask } from '@tauri-apps/plugin-dialog'
-  import type { Message, Buddy, TypingEvent, MessageEditEvent } from '../lib/types'
+  import type { Message, Buddy, TypingEvent, MessageEditEvent, MessageDeletedEvent, ReactionEvent } from '../lib/types'
   import { openUserInfoWindow, openDirectMessageWindow, openRoomInfoWindow } from '../lib/windows'
   import { linkify } from '../lib/linkify'
   import TitleBar from './TitleBar.svelte'
@@ -24,7 +25,14 @@
   let loadingOlder = $state(false)
   let endToken = $state<string | null>(null)
   let messagesDiv = $state<HTMLDivElement | undefined>(undefined)
+  let myUserId = $state<string | null>(null)
   let showNewMsgHint = $state(false)
+
+  // Edit state
+  let editingMsg = $state<Message | null>(null)
+
+  // Reactions state: event_id -> { key -> Set<sender_name> }
+  let reactions = $state<Record<string, Record<string, Set<string>>>>({})
 
   // Typing indicator state
   let typingUsers = $state<string[]>([])
@@ -70,6 +78,7 @@
   })
 
   onMount(async () => {
+    myUserId = await invoke<string>('try_restore_session').catch(() => null)
     if (roomId) {
       loading = true
       try {
@@ -120,6 +129,26 @@
     unlisteners.push(await listen<TypingEvent>('typing', (event) => {
       if (event.payload.room_id === roomId) {
         typingUsers = event.payload.display_names
+      }
+    }))
+
+    // Listen for message deletions
+    unlisteners.push(await listen<MessageDeletedEvent>('message_deleted', (event) => {
+      if (event.payload.room_id === roomId) {
+        messages = messages.filter(msg => msg.event_id !== event.payload.event_id)
+      }
+    }))
+
+    // Listen for reactions
+    unlisteners.push(await listen<ReactionEvent>('reaction', (event) => {
+      if (event.payload.room_id === roomId) {
+        const eventId = event.payload.relates_to
+        const key = event.payload.reaction_key
+        const sender = event.payload.sender_name
+        reactions = { ...reactions }
+        if (!reactions[eventId]) reactions[eventId] = {}
+        if (!reactions[eventId][key]) reactions[eventId][key] = new Set()
+        reactions[eventId][key].add(sender)
       }
     }))
 
@@ -212,18 +241,38 @@
     if (!newMessage.trim() || !roomId) return
     const body = newMessage
     const replyEventId = replyTo?.event_id
+    const editing = editingMsg
     newMessage = ''
     replyTo = null
+    editingMsg = null
     if (typingTimeout) {
       clearTimeout(typingTimeout)
       typingTimeout = null
     }
     sendTyping(roomId, false).catch(() => {})
     try {
-      await sendMessage(roomId, body, replyEventId ?? undefined)
+      if (editing) {
+        await editMessage(roomId, editing.event_id, body)
+        messages = messages.map(m => m.event_id === editing.event_id ? { ...m, body } : m)
+      } else {
+        await sendMessage(roomId, body, replyEventId ?? undefined)
+      }
     } catch (e) {
       console.error('Failed to send:', e)
       newMessage = body
+    }
+  }
+
+  async function handleAttach() {
+    if (!roomId) return
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      const file = await open({ multiple: false })
+      if (file) {
+        await invoke('upload_file', { roomId, filePath: file })
+      }
+    } catch (e) {
+      console.error('Failed to attach file:', e)
     }
   }
 
@@ -243,8 +292,40 @@
     msgContextMenu = null
   }
 
+  function handleMsgEdit() {
+    if (!msgContextMenu) return
+    editingMsg = msgContextMenu.msg
+    newMessage = msgContextMenu.msg.body
+    msgContextMenu = null
+  }
+
+  async function handleMsgDelete() {
+    if (!msgContextMenu) return
+    const msg = msgContextMenu.msg
+    msgContextMenu = null
+    try {
+      await deleteMessage(roomId, msg.event_id)
+      messages = messages.filter(m => m.event_id !== msg.event_id)
+    } catch (e) {
+      console.error('Failed to delete:', e)
+    }
+  }
+
+  function cancelEdit() {
+    editingMsg = null
+    newMessage = ''
+  }
+
   function cancelReply() {
     replyTo = null
+  }
+
+  async function handleReaction(eventId: string, key: string) {
+    try {
+      await sendReaction(roomId, eventId, key)
+    } catch (e) {
+      console.error('Failed to react:', e)
+    }
   }
 
   // Member context menu
@@ -366,6 +447,15 @@
                 {:else}
                   <div class="chat-message-body">{@html linkify(msg.body)}</div>
                 {/if}
+                {#if reactions[msg.event_id]}
+                  <div class="reactions-row">
+                    {#each Object.entries(reactions[msg.event_id]) as [key, senders]}
+                      <button class="reaction-badge" onclick={() => handleReaction(msg.event_id, key)} title={[...senders].join(', ')}>
+                        {key} {senders.size}
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
               </div>
             {/each}
           {/if}
@@ -388,6 +478,14 @@
         </div>
       {/if}
 
+      <!-- Edit preview -->
+      {#if editingMsg}
+        <div class="reply-preview">
+          <span class="reply-preview-text">Editing: {editingMsg.body.length > 60 ? editingMsg.body.slice(0, 60) + '...' : editingMsg.body}</span>
+          <button class="reply-preview-cancel" onclick={cancelEdit}>X</button>
+        </div>
+      {/if}
+
       <!-- Input area -->
       <div class="chat-input">
         <textarea
@@ -397,6 +495,7 @@
           rows="3"
           placeholder="Type a message..."
         ></textarea>
+        <button onclick={handleAttach}>Attach</button>
         <button onclick={handleSend}>Send</button>
       </div>
     </div>
@@ -439,6 +538,12 @@
     </div>
     <div class="context-menu" style="left: {msgContextMenu.x}px; top: {msgContextMenu.y}px;">
       <button class="context-item" onclick={handleMsgReply}>Reply</button>
+      <button class="context-item" onclick={() => { const eid = msgContextMenu!.msg.event_id; closeMsgContextMenu(); handleReaction(eid, '\u{1F44D}') }}>React +1</button>
+      {#if myUserId && msgContextMenu.msg.sender === myUserId}
+        <div class="context-separator"></div>
+        <button class="context-item" onclick={handleMsgEdit}>Edit</button>
+        <button class="context-item danger" onclick={handleMsgDelete}>Delete</button>
+      {/if}
     </div>
   {/if}
 </div>
@@ -687,6 +792,39 @@
   .context-item:hover {
     background: #000080;
     color: white;
+  }
+  .context-item.danger {
+    color: #cc0000;
+  }
+  .context-item.danger:hover {
+    background: #cc0000;
+    color: white;
+  }
+  .context-separator {
+    height: 1px;
+    background: #808080;
+    margin: 2px 4px;
+  }
+  .reactions-row {
+    display: flex;
+    gap: 3px;
+    padding: 1px 0 1px 8px;
+    flex-wrap: wrap;
+  }
+  .reaction-badge {
+    font-size: 10px;
+    padding: 0 4px;
+    border: 1px solid #444;
+    background: #222;
+    color: #ccc;
+    border-radius: 8px;
+    cursor: pointer;
+    line-height: 16px;
+    font-family: 'Courier New', monospace;
+  }
+  .reaction-badge:hover {
+    background: #333;
+    border-color: #66ccff;
   }
   .member-dot {
     display: inline-block;

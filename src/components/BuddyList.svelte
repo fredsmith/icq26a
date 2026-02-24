@@ -2,18 +2,26 @@
   import { onMount } from 'svelte'
   import { listen } from '@tauri-apps/api/event'
   import { buddyList, rooms, unreadCounts, isLoggedIn, currentUserId, currentStatus, syncing } from '../lib/stores'
-  import { getBuddyList, getRooms, matrixLogout, matrixDisconnect, tryRestoreSession, leaveRoom, removeBuddy } from '../lib/matrix'
+  import { getBuddyList, getRooms, matrixLogout, matrixDisconnect, tryRestoreSession, leaveRoom, removeBuddy, getPendingInvites, acceptInvite, rejectInvite, setDockBadge } from '../lib/matrix'
   import { invoke } from '@tauri-apps/api/core'
-  import type { Buddy, Message } from '../lib/types'
+  import type { Buddy, Message, InviteInfo } from '../lib/types'
   import StatusPicker from './StatusPicker.svelte'
   import TitleBar from './TitleBar.svelte'
   import { openPreferencesWindow, openDirectMessageWindow, openChatRoomWindow, openServerLogWindow, openUserInfoWindow, openRoomInfoWindow, openFindUserWindow, openJoinRoomWindow } from '../lib/windows'
+
+  let pendingInvites = $state<InviteInfo[]>([])
 
   const isOffline = $derived($currentStatus === 'offline')
   const presenceAvailable = $derived($buddyList.some(b => b.presence !== 'unknown'))
   const onlineBuddies = $derived($buddyList.filter(b => b.presence !== 'offline' && b.presence !== 'unknown'))
   const offlineBuddies = $derived($buddyList.filter(b => b.presence === 'offline'))
   const groupRooms = $derived($rooms.filter(r => !r.is_direct))
+
+  // Update dock badge when unread counts change
+  const totalUnread = $derived(Object.values($unreadCounts).reduce((a, b) => a + b, 0))
+  $effect(() => {
+    setDockBadge(totalUnread).catch(() => {})
+  })
 
   let refreshing = false
   async function refreshLists() {
@@ -25,6 +33,8 @@
       buddyList.set(fetchedBuddies)
       const fetchedRooms = await getRooms()
       rooms.set(fetchedRooms)
+      const invites = await getPendingInvites().catch(() => [])
+      pendingInvites = invites
     } catch (e) {
       console.error('Failed to load buddy list:', e)
     } finally {
@@ -43,8 +53,19 @@
           ...counts,
           [roomId]: (counts[roomId] || 0) + 1,
         }))
+        // Desktop notification
+        if (Notification.permission === 'granted') {
+          const senderName = event.payload.sender_name || 'Someone'
+          const body = event.payload.body?.slice(0, 100) || 'New message'
+          new Notification(senderName, { body, tag: roomId })
+        }
       }
     })
+
+    // Request notification permission
+    if (Notification.permission === 'default') {
+      Notification.requestPermission()
+    }
 
     await listen('rooms_changed', () => {
       refreshLists()
@@ -53,6 +74,13 @@
     await listen<string>('sync_status', (event) => {
       if (event.payload === 'synced') {
         refreshLists()
+      }
+    })
+
+    await listen<InviteInfo>('room_invite', (event) => {
+      // Add to pending invites if not already there
+      if (!pendingInvites.find(i => i.room_id === event.payload.room_id)) {
+        pendingInvites = [...pendingInvites, event.payload]
       }
     })
 
@@ -173,6 +201,30 @@
     }
   }
 
+  async function handleAcceptInvite(invite: InviteInfo) {
+    try {
+      const room = await acceptInvite(invite.room_id)
+      pendingInvites = pendingInvites.filter(i => i.room_id !== invite.room_id)
+      if (room.is_direct) {
+        openDirectMessageWindow(room.room_id, room.name)
+      } else {
+        openChatRoomWindow(room.room_id, room.name)
+      }
+      await refreshLists()
+    } catch (e) {
+      console.error('Failed to accept invite:', e)
+    }
+  }
+
+  async function handleRejectInvite(invite: InviteInfo) {
+    try {
+      await rejectInvite(invite.room_id)
+      pendingInvites = pendingInvites.filter(i => i.room_id !== invite.room_id)
+    } catch (e) {
+      console.error('Failed to reject invite:', e)
+    }
+  }
+
   async function handleLogout() {
     try {
       await matrixLogout()
@@ -230,6 +282,21 @@
               <span class="unread-badge">{getUnreadForBuddy(buddy)}</span>
             {/if}
           </button>
+        {/each}
+      {/if}
+      {#if pendingInvites.length > 0}
+        <div class="group-header">Invitations</div>
+        {#each pendingInvites as invite}
+          <div class="invite-row">
+            <span class="invite-name">{invite.room_name || invite.room_id}</span>
+            {#if invite.inviter_name}
+              <span class="invite-from">from {invite.inviter_name}</span>
+            {/if}
+            <div class="invite-actions">
+              <button class="invite-btn accept" onclick={() => handleAcceptInvite(invite)}>Join</button>
+              <button class="invite-btn reject" onclick={() => handleRejectInvite(invite)}>X</button>
+            </div>
+          </div>
         {/each}
       {/if}
       {#if groupRooms.length > 0}
@@ -435,5 +502,45 @@
   }
   .buddy-toolbar button:hover {
     text-decoration: underline;
+  }
+  .invite-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 12px;
+    font-size: 11px;
+    flex-wrap: wrap;
+  }
+  .invite-name {
+    font-weight: bold;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .invite-from {
+    color: #666;
+    font-size: 10px;
+  }
+  .invite-actions {
+    display: flex;
+    gap: 2px;
+    margin-left: auto;
+  }
+  .invite-btn {
+    font-size: 10px;
+    padding: 0 6px;
+    line-height: 16px;
+    cursor: pointer;
+  }
+  .invite-btn.accept {
+    background: #00cc00;
+    color: white;
+    border: 1px solid #009900;
+  }
+  .invite-btn.reject {
+    background: #cc0000;
+    color: white;
+    border: 1px solid #990000;
   }
 </style>

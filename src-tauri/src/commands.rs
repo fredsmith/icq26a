@@ -1,7 +1,8 @@
 use crate::matrix_client::{
-    Buddy, LogEntry, LoginCredentials, MatrixState, Message, MessageEditEvent, MessagesPage,
-    PersistedSession, Room, RoomProfile, ServerLog, SharedRoom, TypingEvent, UserProfile,
-    VerificationEmoji, VerificationEmojisEvent, VerificationEvent,
+    Buddy, InviteInfo, LogEntry, LoginCredentials, MatrixState, Message, MessageDeletedEvent,
+    MessageEditEvent, MessagesPage, PersistedSession, ReactionEvent, Room, RoomProfile, ServerLog,
+    SharedRoom, TypingEvent, UserProfile, VerificationEmoji, VerificationEmojisEvent,
+    VerificationEvent,
 };
 use matrix_sdk::{Client, ServerName};
 use tauri::{Emitter, State};
@@ -1176,9 +1177,159 @@ pub async fn send_message(
 }
 
 #[tauri::command]
-pub async fn set_presence(status: String, state: State<'_, MatrixState>) -> Result<(), String> {
-    // Stub — will map ICQ statuses to Matrix presence
-    let _ = (status, state);
+pub async fn edit_message(
+    room_id: String,
+    event_id: String,
+    new_body: String,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<(), String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", format!("edit_message: room={}, event={}", room_id, event_id));
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let room_id = matrix_sdk::ruma::OwnedRoomId::try_from(room_id.as_str())
+        .map_err(|e| format!("Invalid room ID: {}", e))?;
+    let room = client.get_room(&room_id).ok_or("Room not found")?;
+
+    // Build the edit event as raw JSON — the SDK's Replacement type is non_exhaustive/private
+    let raw_content = serde_json::json!({
+        "msgtype": "m.text",
+        "body": format!("* {}", new_body),
+        "m.new_content": {
+            "msgtype": "m.text",
+            "body": new_body,
+        },
+        "m.relates_to": {
+            "rel_type": "m.replace",
+            "event_id": event_id,
+        }
+    });
+    let content: matrix_sdk::ruma::events::room::message::RoomMessageEventContent =
+        serde_json::from_value(raw_content)
+            .map_err(|e| format!("Failed to build edit content: {}", e))?;
+
+    room.send(content)
+        .await
+        .map_err(|e| {
+            slog(&app, &log, "error", format!("Edit failed: {}", e));
+            format!("Edit failed: {}", e)
+        })?;
+
+    slog(&app, &log, "info", "Message edited OK".into());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_message(
+    room_id: String,
+    event_id: String,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<(), String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", format!("delete_message: room={}, event={}", room_id, event_id));
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let room_id = matrix_sdk::ruma::OwnedRoomId::try_from(room_id.as_str())
+        .map_err(|e| format!("Invalid room ID: {}", e))?;
+    let room = client.get_room(&room_id).ok_or("Room not found")?;
+
+    let event_id = matrix_sdk::ruma::OwnedEventId::try_from(event_id.as_str())
+        .map_err(|e| format!("Invalid event ID: {}", e))?;
+
+    room.redact(&event_id, None, None)
+        .await
+        .map_err(|e| {
+            slog(&app, &log, "error", format!("Delete failed: {}", e));
+            format!("Delete failed: {}", e)
+        })?;
+
+    slog(&app, &log, "info", "Message deleted OK".into());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn send_reaction(
+    room_id: String,
+    event_id: String,
+    reaction_key: String,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<(), String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", format!("send_reaction: room={}, event={}, key={}", room_id, event_id, reaction_key));
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let room_id = matrix_sdk::ruma::OwnedRoomId::try_from(room_id.as_str())
+        .map_err(|e| format!("Invalid room ID: {}", e))?;
+    let room = client.get_room(&room_id).ok_or("Room not found")?;
+
+    let event_id = matrix_sdk::ruma::OwnedEventId::try_from(event_id.as_str())
+        .map_err(|e| format!("Invalid event ID: {}", e))?;
+
+    let content = matrix_sdk::ruma::events::reaction::ReactionEventContent::new(
+        matrix_sdk::ruma::events::relation::Annotation::new(event_id, reaction_key),
+    );
+
+    room.send(content)
+        .await
+        .map_err(|e| {
+            slog(&app, &log, "error", format!("Reaction failed: {}", e));
+            format!("Reaction failed: {}", e)
+        })?;
+
+    slog(&app, &log, "info", "Reaction sent OK".into());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_presence(
+    status: String,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<(), String> {
+    let log = state.log.clone();
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    // Map ICQ status names to Matrix presence states
+    let presence = match status.as_str() {
+        "online" | "free_for_chat" => matrix_sdk::ruma::presence::PresenceState::Online,
+        "away" | "na" => matrix_sdk::ruma::presence::PresenceState::Unavailable,
+        "occupied" | "dnd" => matrix_sdk::ruma::presence::PresenceState::Unavailable,
+        "invisible" | "offline" => matrix_sdk::ruma::presence::PresenceState::Offline,
+        _ => matrix_sdk::ruma::presence::PresenceState::Online,
+    };
+
+    use matrix_sdk::ruma::api::client::presence::set_presence;
+    let user_id = client.user_id().ok_or("No user ID")?.to_owned();
+    let mut request = set_presence::v3::Request::new(user_id, presence.clone());
+    // Set a status message for non-standard ICQ statuses
+    match status.as_str() {
+        "dnd" => request.status_msg = Some("Do Not Disturb".to_string()),
+        "occupied" => request.status_msg = Some("Occupied".to_string()),
+        "na" => request.status_msg = Some("Not Available".to_string()),
+        "free_for_chat" => request.status_msg = Some("Free for Chat".to_string()),
+        _ => {}
+    }
+
+    match client.send(request).await {
+        Ok(_) => {
+            slog(&app, &log, "info", format!("Presence set to {} (matrix: {:?})", status, presence));
+        }
+        Err(e) => {
+            // Some servers don't support presence — log but don't fail
+            slog(&app, &log, "warn", format!("Failed to set presence: {}", e));
+        }
+    }
+
     Ok(())
 }
 
@@ -1442,6 +1593,69 @@ pub async fn start_sync(
                             reply_body: reply_body_text,
                         };
                         let _ = app.emit("new_message", &msg);
+                    }
+                }
+            },
+        );
+
+        // Redaction event handler (message deletion)
+        let redact_app = sync_app.clone();
+        client.add_event_handler(
+            move |event: matrix_sdk::ruma::events::room::redaction::SyncRoomRedactionEvent,
+                  room: matrix_sdk::Room| {
+                let app = redact_app.clone();
+                async move {
+                    if let Some(original) = event.as_original() {
+                        let payload = MessageDeletedEvent {
+                            room_id: room.room_id().to_string(),
+                            event_id: original.redacts.as_ref().map(|e| e.to_string()).unwrap_or_default(),
+                        };
+                        if !payload.event_id.is_empty() {
+                            let _ = app.emit("message_deleted", &payload);
+                        }
+                    }
+                }
+            },
+        );
+
+        // Reaction event handler
+        let react_app = sync_app.clone();
+        client.add_event_handler(
+            move |event: matrix_sdk::ruma::events::reaction::SyncReactionEvent,
+                  room: matrix_sdk::Room| {
+                let app = react_app.clone();
+                async move {
+                    if let Some(original) = event.as_original() {
+                        let payload = ReactionEvent {
+                            room_id: room.room_id().to_string(),
+                            event_id: event.event_id().to_string(),
+                            reaction_key: original.content.relates_to.key.clone(),
+                            sender: event.sender().to_string(),
+                            sender_name: event.sender().localpart().to_string(),
+                            relates_to: original.content.relates_to.event_id.to_string(),
+                        };
+                        let _ = app.emit("reaction", &payload);
+                    }
+                }
+            },
+        );
+
+        // Room invite handler — notify frontend when someone invites us
+        let invite_app = sync_app.clone();
+        client.add_event_handler(
+            move |event: matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent,
+                  room: matrix_sdk::Room| {
+                let app = invite_app.clone();
+                async move {
+                    // Only handle events targeting us (our membership changed to invite)
+                    if event.content.membership == matrix_sdk::ruma::events::room::member::MembershipState::Invite {
+                        let payload = InviteInfo {
+                            room_id: room.room_id().to_string(),
+                            room_name: room.display_name().await.map(|n| n.to_string()).ok(),
+                            inviter: Some(event.sender.to_string()),
+                            inviter_name: Some(event.sender.localpart().to_string()),
+                        };
+                        let _ = app.emit("room_invite", &payload);
                     }
                 }
             },
@@ -1980,5 +2194,133 @@ pub async fn remove_buddy(
     }
 
     slog(&app, &log, "info", format!("remove_buddy: left {} DM rooms with {}", left_count, user_id));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_pending_invites(
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<Vec<InviteInfo>, String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", "get_pending_invites".into());
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let mut invites = Vec::new();
+    for room in client.invited_rooms() {
+        let room_id = room.room_id().to_string();
+        let room_name = room
+            .display_name()
+            .await
+            .map(|n| n.to_string())
+            .ok();
+
+        // Try to find who invited us from the room state
+        let mut inviter: Option<String> = None;
+        let mut inviter_name: Option<String> = None;
+        if let Ok(Some(member)) = room.get_member_no_sync(client.user_id().unwrap()).await {
+            let event = member.event();
+            inviter = Some(event.sender().to_string());
+            inviter_name = Some(event.sender().localpart().to_string());
+        }
+
+        invites.push(InviteInfo {
+            room_id,
+            room_name,
+            inviter,
+            inviter_name,
+        });
+    }
+
+    slog(&app, &log, "info", format!("get_pending_invites: {} invites", invites.len()));
+    Ok(invites)
+}
+
+#[tauri::command]
+pub async fn accept_invite(
+    room_id: String,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<Room, String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", format!("accept_invite: {}", room_id));
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let room_id_parsed = matrix_sdk::ruma::OwnedRoomId::try_from(room_id.as_str())
+        .map_err(|e| format!("Invalid room ID: {}", e))?;
+
+    let room = client.get_room(&room_id_parsed).ok_or("Room not found")?;
+
+    room.join().await.map_err(|e| {
+        slog(&app, &log, "error", format!("Failed to accept invite: {}", e));
+        format!("Failed to accept invite: {}", e)
+    })?;
+
+    let name = room
+        .display_name()
+        .await
+        .map(|n| n.to_string())
+        .unwrap_or_else(|_| room_id.clone());
+    let is_direct = room.is_direct().await.unwrap_or(false);
+
+    slog(&app, &log, "info", format!("Accepted invite to: {}", name));
+
+    Ok(Room {
+        room_id,
+        name,
+        is_direct,
+        last_message: None,
+        unread_count: 0,
+    })
+}
+
+#[tauri::command]
+pub async fn reject_invite(
+    room_id: String,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<(), String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", format!("reject_invite: {}", room_id));
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let room_id_parsed = matrix_sdk::ruma::OwnedRoomId::try_from(room_id.as_str())
+        .map_err(|e| format!("Invalid room ID: {}", e))?;
+
+    let room = client.get_room(&room_id_parsed).ok_or("Room not found")?;
+
+    room.leave().await.map_err(|e| {
+        slog(&app, &log, "error", format!("Failed to reject invite: {}", e));
+        format!("Failed to reject invite: {}", e)
+    })?;
+
+    slog(&app, &log, "info", "Invite rejected".into());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_dock_badge(count: u32) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSApplication;
+        use objc2_foundation::NSString;
+        unsafe {
+            let mtm = MainThreadMarker::new_unchecked();
+            let app = NSApplication::sharedApplication(mtm);
+            if count == 0 {
+                app.dockTile().setBadgeLabel(None);
+            } else {
+                let label = NSString::from_str(&count.to_string());
+                app.dockTile().setBadgeLabel(Some(&label));
+            }
+        }
+    }
     Ok(())
 }
