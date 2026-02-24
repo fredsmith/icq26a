@@ -1311,13 +1311,11 @@ pub async fn start_sync(
         // Typing event handler
         let typing_app = app_handle.clone();
         let typing_client = client.clone();
-        let typing_log = sync_log.clone();
         client.add_event_handler(
             move |event: matrix_sdk::ruma::events::SyncEphemeralRoomEvent<matrix_sdk::ruma::events::typing::TypingEventContent>,
                   room: matrix_sdk::Room| {
                 let app = typing_app.clone();
                 let cl = typing_client.clone();
-                let log = typing_log.clone();
                 async move {
                     let my_id_str = cl.user_id().map(|u| u.to_string());
                     let mut display_names = Vec::new();
@@ -1333,10 +1331,6 @@ pub async fn start_sync(
                             _ => uid.localpart().to_string(),
                         };
                         display_names.push(name);
-                    }
-
-                    if !display_names.is_empty() {
-                        slog_buf(&log, "info", format!("typing: {:?} in {}", display_names, room.room_id()));
                     }
 
                     let payload = TypingEvent {
