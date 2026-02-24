@@ -11,6 +11,9 @@
 
   let pendingInvites = $state<InviteInfo[]>([])
 
+  // Track rooms with focused, scrolled-to-bottom windows — no badges for these
+  let visibleRooms = new Set<string>()
+
   const isOffline = $derived($currentStatus === 'offline')
   const presenceAvailable = $derived($buddyList.some(b => b.presence !== 'unknown'))
   const onlineBuddies = $derived($buddyList.filter(b => b.presence !== 'offline' && b.presence !== 'unknown'))
@@ -48,17 +51,26 @@
 
     await listen<Message>('new_message', (event) => {
       const roomId = event.payload.room_id
-      if (roomId) {
+      if (roomId && !visibleRooms.has(roomId)) {
         unreadCounts.update(counts => ({
           ...counts,
           [roomId]: (counts[roomId] || 0) + 1,
         }))
-        // Desktop notification
+        // Desktop notification only for non-visible rooms
         if (Notification.permission === 'granted') {
           const senderName = event.payload.sender_name || 'Someone'
           const body = event.payload.body?.slice(0, 100) || 'New message'
           new Notification(senderName, { body, tag: roomId })
         }
+      }
+    })
+
+    // Track which rooms have focused, scrolled-to-bottom windows
+    await listen<{ room_id: string; visible: boolean }>('room_visible', (event) => {
+      if (event.payload.visible) {
+        visibleRooms.add(event.payload.room_id)
+      } else {
+        visibleRooms.delete(event.payload.room_id)
       }
     })
 

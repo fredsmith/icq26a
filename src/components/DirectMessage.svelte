@@ -122,6 +122,7 @@
     const appWindow = getCurrentWindow()
     const unlistenFocus = await appWindow.onFocusChanged(({ payload: focused }) => {
       windowFocused = focused
+      emitVisibility()
       if (focused && messages.length > 0) {
         const lastMsg = messages[messages.length - 1]
         if (lastMsg.event_id) {
@@ -140,9 +141,15 @@
         emit('clear_unread', { room_id: roomId })
       }
     }
+    emitVisibility()
   })
 
+  function emitVisibility() {
+    emit('room_visible', { room_id: roomId, visible: windowFocused && isNearBottom() })
+  }
+
   onDestroy(() => {
+    emit('room_visible', { room_id: roomId, visible: false })
     for (const fn of unlisteners) fn()
     if (typingTimeout) clearTimeout(typingTimeout)
   })
@@ -196,6 +203,7 @@
     if (isNearBottom()) {
       showNewMsgHint = false
     }
+    emitVisibility()
   }
 
   function jumpToBottom() {
