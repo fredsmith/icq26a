@@ -1,7 +1,7 @@
 use crate::matrix_client::{
-    Buddy, LogEntry, LoginCredentials, MatrixState, Message, MessagesPage, PersistedSession, Room,
-    RoomProfile, ServerLog, SharedRoom, UserProfile, VerificationEmoji,
-    VerificationEmojisEvent, VerificationEvent,
+    Buddy, LogEntry, LoginCredentials, MatrixState, Message, MessageEditEvent, MessagesPage,
+    PersistedSession, Room, RoomProfile, ServerLog, SharedRoom, TypingEvent, UserProfile,
+    VerificationEmoji, VerificationEmojisEvent, VerificationEvent,
 };
 use matrix_sdk::{Client, ServerName};
 use tauri::{Emitter, State};
@@ -43,6 +43,53 @@ fn media_source_to_mxc(source: &matrix_sdk::ruma::events::room::MediaSource) -> 
         matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => Some(uri.to_string()),
         _ => None,
     }
+}
+
+/// Parse Matrix reply fallback from body. Returns (sender_id, quoted_text).
+fn extract_reply_fallback(body: &str) -> Option<(String, String)> {
+    if !body.starts_with("> <") {
+        return None;
+    }
+    let mut lines = body.lines();
+    let first_line = lines.next()?;
+    let after_bracket = first_line.strip_prefix("> <")?;
+    let end_bracket = after_bracket.find('>')?;
+    let sender = after_bracket[..end_bracket].to_string();
+    let first_quote = after_bracket[end_bracket + 1..].trim_start().to_string();
+
+    let mut quoted_lines = vec![first_quote];
+    for line in lines {
+        if let Some(stripped) = line.strip_prefix("> ") {
+            quoted_lines.push(stripped.to_string());
+        } else {
+            break;
+        }
+    }
+
+    let quoted_body = quoted_lines.join("\n").trim().to_string();
+    Some((sender, quoted_body))
+}
+
+/// Remove the Matrix reply fallback prefix from a body, returning the actual reply text.
+fn strip_reply_fallback(body: &str) -> String {
+    if !body.starts_with("> ") {
+        return body.to_string();
+    }
+    let mut lines = body.lines().peekable();
+    while let Some(line) = lines.peek() {
+        if line.starts_with("> ") || *line == ">" {
+            lines.next();
+        } else {
+            break;
+        }
+    }
+    // Skip blank line after fallback
+    if let Some(line) = lines.peek() {
+        if line.is_empty() {
+            lines.next();
+        }
+    }
+    lines.collect::<Vec<_>>().join("\n")
 }
 
 /// Fetch an mxc:// avatar as a base64 data URL using authenticated media endpoints.
@@ -957,34 +1004,103 @@ pub async fn get_room_messages(
     let end_token = messages_response.end;
 
     let mut messages = Vec::new();
+    let mut edits: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
     for event in messages_response.chunk {
         if let Ok(timeline_event) = event.raw().deserialize() {
             if let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
                 matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(msg),
             ) = timeline_event
             {
-                let (body, msg_type, media_url, filename) = match msg.as_original() {
-                    Some(original) => match &original.content.msgtype {
-                        matrix_sdk::ruma::events::room::message::MessageType::Text(text) => {
-                            (text.body.clone(), "text".to_string(), None, None)
-                        }
-                        matrix_sdk::ruma::events::room::message::MessageType::Image(img) => {
-                            (img.body.clone(), "image".to_string(), media_source_to_mxc(&img.source), Some(img.body.clone()))
-                        }
-                        matrix_sdk::ruma::events::room::message::MessageType::File(file) => {
-                            let fname = file.filename.clone().unwrap_or_else(|| file.body.clone());
-                            (file.body.clone(), "file".to_string(), media_source_to_mxc(&file.source), Some(fname))
-                        }
-                        matrix_sdk::ruma::events::room::message::MessageType::Audio(audio) => {
-                            (audio.body.clone(), "audio".to_string(), media_source_to_mxc(&audio.source), Some(audio.body.clone()))
-                        }
-                        matrix_sdk::ruma::events::room::message::MessageType::Video(video) => {
-                            (video.body.clone(), "video".to_string(), media_source_to_mxc(&video.source), Some(video.body.clone()))
-                        }
-                        _ => (String::new(), "unknown".to_string(), None, None),
-                    },
-                    None => (String::new(), "unknown".to_string(), None, None),
+                let Some(original) = msg.as_original() else {
+                    continue;
                 };
+
+                // Handle edits: collect replacement content, skip the edit event itself
+                if let Some(matrix_sdk::ruma::events::room::message::Relation::Replacement(replacement)) = &original.content.relates_to {
+                    let new_body = match &replacement.new_content.msgtype {
+                        matrix_sdk::ruma::events::room::message::MessageType::Text(text) => text.body.clone(),
+                        matrix_sdk::ruma::events::room::message::MessageType::Notice(notice) => notice.body.clone(),
+                        matrix_sdk::ruma::events::room::message::MessageType::Emote(emote) => format!("* {}", emote.body),
+                        _ => String::new(),
+                    };
+                    if !new_body.is_empty() {
+                        edits.insert(replacement.event_id.to_string(), new_body);
+                    }
+                    continue;
+                }
+
+                // Extract reply relation (Reply or Thread)
+                let mut in_reply_to: Option<String> = None;
+                let mut reply_sender_name: Option<String> = None;
+                let mut reply_body_text: Option<String> = None;
+
+                if let Some(relation) = &original.content.relates_to {
+                    match relation {
+                        matrix_sdk::ruma::events::room::message::Relation::Reply { in_reply_to: irt } => {
+                            in_reply_to = Some(irt.event_id.to_string());
+                        }
+                        matrix_sdk::ruma::events::room::message::Relation::Thread(thread) => {
+                            if let Some(irt) = &thread.in_reply_to {
+                                in_reply_to = Some(irt.event_id.to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Fallback: parse raw JSON for m.relates_to.m.in_reply_to.event_id
+                // Some servers (e.g. continuwuity) may include fields that ruma
+                // doesn't recognize, causing typed deserialization to miss the reply.
+                if in_reply_to.is_none() {
+                    if let Ok(raw_json) = serde_json::from_str::<serde_json::Value>(event.raw().json().get()) {
+                        if let Some(eid) = raw_json.pointer("/content/m.relates_to/m.in_reply_to/event_id")
+                            .and_then(|v| v.as_str())
+                        {
+                            in_reply_to = Some(eid.to_string());
+                        }
+                    }
+                }
+
+                let (mut body, msg_type, media_url, filename) = match &original.content.msgtype {
+                    matrix_sdk::ruma::events::room::message::MessageType::Text(text) => {
+                        (text.body.clone(), "text".to_string(), None, None)
+                    }
+                    matrix_sdk::ruma::events::room::message::MessageType::Notice(notice) => {
+                        (notice.body.clone(), "text".to_string(), None, None)
+                    }
+                    matrix_sdk::ruma::events::room::message::MessageType::Emote(emote) => {
+                        (format!("* {}", emote.body), "text".to_string(), None, None)
+                    }
+                    matrix_sdk::ruma::events::room::message::MessageType::Image(img) => {
+                        (img.body.clone(), "image".to_string(), media_source_to_mxc(&img.source), Some(img.body.clone()))
+                    }
+                    matrix_sdk::ruma::events::room::message::MessageType::File(file) => {
+                        let fname = file.filename.clone().unwrap_or_else(|| file.body.clone());
+                        (file.body.clone(), "file".to_string(), media_source_to_mxc(&file.source), Some(fname))
+                    }
+                    matrix_sdk::ruma::events::room::message::MessageType::Audio(audio) => {
+                        (audio.body.clone(), "audio".to_string(), media_source_to_mxc(&audio.source), Some(audio.body.clone()))
+                    }
+                    matrix_sdk::ruma::events::room::message::MessageType::Video(video) => {
+                        (video.body.clone(), "video".to_string(), media_source_to_mxc(&video.source), Some(video.body.clone()))
+                    }
+                    _ => (String::new(), "unknown".to_string(), None, None),
+                };
+
+                // For text replies, parse and strip fallback
+                if msg_type == "text" && body.starts_with("> <") {
+                    if in_reply_to.is_none() {
+                        // Body has reply fallback but typed relation wasn't parsed —
+                        // use body text as the source of reply info
+                        in_reply_to = Some("fallback".to_string());
+                    }
+                    if let Some((sender, quoted)) = extract_reply_fallback(&body) {
+                        reply_sender_name = Some(sender);
+                        reply_body_text = Some(quoted);
+                    }
+                    body = strip_reply_fallback(&body);
+                }
 
                 messages.push(Message {
                     room_id: room_id.to_string(),
@@ -996,12 +1112,23 @@ pub async fn get_room_messages(
                     msg_type,
                     media_url,
                     filename,
+                    in_reply_to,
+                    reply_sender_name,
+                    reply_body: reply_body_text,
                 });
             }
         }
     }
+
+    // Apply edits to original messages
+    for msg in &mut messages {
+        if let Some(new_body) = edits.get(&msg.event_id) {
+            msg.body = new_body.clone();
+        }
+    }
+
     messages.reverse();
-    slog(&app, &log, "info", format!("get_room_messages: returning {} messages", messages.len()));
+    slog(&app, &log, "info", format!("get_room_messages: returning {} messages ({} edits applied)", messages.len(), edits.len()));
     Ok(MessagesPage { messages, end_token })
 }
 
@@ -1009,11 +1136,12 @@ pub async fn get_room_messages(
 pub async fn send_message(
     room_id: String,
     body: String,
+    in_reply_to_event_id: Option<String>,
     app: tauri::AppHandle,
     state: State<'_, MatrixState>,
 ) -> Result<(), String> {
     let log = state.log.clone();
-    slog(&app, &log, "info", format!("send_message: room={}, len={}", room_id, body.len()));
+    slog(&app, &log, "info", format!("send_message: room={}, len={}, reply={:?}", room_id, body.len(), in_reply_to_event_id));
 
     let client_lock = state.client.lock().await;
     let client = client_lock.as_ref().ok_or("Not logged in")?;
@@ -1023,8 +1151,19 @@ pub async fn send_message(
 
     let room = client.get_room(&room_id).ok_or("Room not found")?;
 
-    let content =
+    let mut content =
         matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(&body);
+
+    if let Some(reply_id) = in_reply_to_event_id {
+        let event_id = matrix_sdk::ruma::OwnedEventId::try_from(reply_id.as_str())
+            .map_err(|e| format!("Invalid event ID: {}", e))?;
+        content.relates_to = Some(
+            matrix_sdk::ruma::events::room::message::Relation::Reply {
+                in_reply_to: matrix_sdk::ruma::events::relation::InReplyTo::new(event_id),
+            }
+        );
+    }
+
     room.send(content)
         .await
         .map_err(|e| {
@@ -1040,6 +1179,52 @@ pub async fn send_message(
 pub async fn set_presence(status: String, state: State<'_, MatrixState>) -> Result<(), String> {
     // Stub — will map ICQ statuses to Matrix presence
     let _ = (status, state);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn send_typing(
+    room_id: String,
+    typing: bool,
+    state: State<'_, MatrixState>,
+) -> Result<(), String> {
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let room_id = matrix_sdk::ruma::OwnedRoomId::try_from(room_id.as_str())
+        .map_err(|e| format!("Invalid room ID: {}", e))?;
+    let room = client.get_room(&room_id).ok_or("Room not found")?;
+
+    room.typing_notice(typing)
+        .await
+        .map_err(|e| format!("Typing notice failed: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn mark_as_read(
+    room_id: String,
+    event_id: String,
+    state: State<'_, MatrixState>,
+) -> Result<(), String> {
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    let room_id_parsed = matrix_sdk::ruma::OwnedRoomId::try_from(room_id.as_str())
+        .map_err(|e| format!("Invalid room ID: {}", e))?;
+    let room = client.get_room(&room_id_parsed).ok_or("Room not found")?;
+
+    let event_id_parsed = matrix_sdk::ruma::OwnedEventId::try_from(event_id.as_str())
+        .map_err(|e| format!("Invalid event ID: {}", e))?;
+
+    room.send_single_receipt(
+        matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType::Read,
+        matrix_sdk::ruma::events::receipt::ReceiptThread::Unthreaded,
+        event_id_parsed,
+    )
+    .await
+    .map_err(|e| format!("Read receipt failed: {}", e))?;
+
     Ok(())
 }
 
@@ -1123,15 +1308,100 @@ pub async fn start_sync(
             },
         );
 
+        // Typing event handler
+        let typing_app = app_handle.clone();
+        let typing_client = client.clone();
+        let typing_log = sync_log.clone();
+        client.add_event_handler(
+            move |event: matrix_sdk::ruma::events::SyncEphemeralRoomEvent<matrix_sdk::ruma::events::typing::TypingEventContent>,
+                  room: matrix_sdk::Room| {
+                let app = typing_app.clone();
+                let cl = typing_client.clone();
+                let log = typing_log.clone();
+                async move {
+                    let my_id_str = cl.user_id().map(|u| u.to_string());
+                    let mut display_names = Vec::new();
+                    let mut user_ids = Vec::new();
+
+                    for uid in &event.content.user_ids {
+                        if my_id_str.as_deref() == Some(uid.as_str()) {
+                            continue;
+                        }
+                        user_ids.push(uid.to_string());
+                        let name = match room.get_member_no_sync(uid).await {
+                            Ok(Some(member)) => member.display_name().unwrap_or(uid.localpart()).to_string(),
+                            _ => uid.localpart().to_string(),
+                        };
+                        display_names.push(name);
+                    }
+
+                    if !display_names.is_empty() {
+                        slog_buf(&log, "info", format!("typing: {:?} in {}", display_names, room.room_id()));
+                    }
+
+                    let payload = TypingEvent {
+                        room_id: room.room_id().to_string(),
+                        user_ids,
+                        display_names,
+                    };
+                    let _ = app.emit("typing", &payload);
+                }
+            },
+        );
+
         client.add_event_handler(
             move |event: matrix_sdk::ruma::events::room::message::SyncRoomMessageEvent,
                   room: matrix_sdk::Room| {
                 let app = app_handle.clone();
                 async move {
                     if let Some(original) = event.as_original() {
-                        let (body, msg_type, media_url, filename) = match &original.content.msgtype {
+                        // Handle edits: emit message_edited event
+                        if let Some(matrix_sdk::ruma::events::room::message::Relation::Replacement(replacement)) = &original.content.relates_to {
+                            let new_body = match &replacement.new_content.msgtype {
+                                matrix_sdk::ruma::events::room::message::MessageType::Text(text) => text.body.clone(),
+                                matrix_sdk::ruma::events::room::message::MessageType::Notice(notice) => notice.body.clone(),
+                                matrix_sdk::ruma::events::room::message::MessageType::Emote(emote) => format!("* {}", emote.body),
+                                _ => return,
+                            };
+                            let edit = MessageEditEvent {
+                                room_id: room.room_id().to_string(),
+                                original_event_id: replacement.event_id.to_string(),
+                                new_body,
+                                sender: event.sender().to_string(),
+                                sender_name: event.sender().localpart().to_string(),
+                            };
+                            let _ = app.emit("message_edited", &edit);
+                            return;
+                        }
+
+                        // Extract reply relation (Reply or Thread)
+                        let mut in_reply_to: Option<String> = None;
+                        let mut reply_sender_name: Option<String> = None;
+                        let mut reply_body_text: Option<String> = None;
+
+                        if let Some(relation) = &original.content.relates_to {
+                            match relation {
+                                matrix_sdk::ruma::events::room::message::Relation::Reply { in_reply_to: irt } => {
+                                    in_reply_to = Some(irt.event_id.to_string());
+                                }
+                                matrix_sdk::ruma::events::room::message::Relation::Thread(thread) => {
+                                    if let Some(irt) = &thread.in_reply_to {
+                                        in_reply_to = Some(irt.event_id.to_string());
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        let (mut body, msg_type, media_url, filename) = match &original.content.msgtype {
                             matrix_sdk::ruma::events::room::message::MessageType::Text(text) => {
                                 (text.body.clone(), "text".to_string(), None, None)
+                            }
+                            matrix_sdk::ruma::events::room::message::MessageType::Notice(notice) => {
+                                (notice.body.clone(), "text".to_string(), None, None)
+                            }
+                            matrix_sdk::ruma::events::room::message::MessageType::Emote(emote) => {
+                                (format!("* {}", emote.body), "text".to_string(), None, None)
                             }
                             matrix_sdk::ruma::events::room::message::MessageType::Image(img) => {
                                 (img.body.clone(), "image".to_string(), media_source_to_mxc(&img.source), Some(img.body.clone()))
@@ -1148,6 +1418,21 @@ pub async fn start_sync(
                             }
                             _ => return,
                         };
+
+                        // For text replies, parse and strip fallback
+                        if msg_type == "text" && body.starts_with("> <") {
+                            if in_reply_to.is_none() {
+                                // Body has reply fallback but typed relation wasn't parsed —
+                                // use body text as the source of reply info
+                                in_reply_to = Some("fallback".to_string());
+                            }
+                            if let Some((sender, quoted)) = extract_reply_fallback(&body) {
+                                reply_sender_name = Some(sender);
+                                reply_body_text = Some(quoted);
+                            }
+                            body = strip_reply_fallback(&body);
+                        }
+
                         let msg = Message {
                             room_id: room.room_id().to_string(),
                             event_id: event.event_id().to_string(),
@@ -1158,6 +1443,9 @@ pub async fn start_sync(
                             msg_type,
                             media_url,
                             filename,
+                            in_reply_to,
+                            reply_sender_name,
+                            reply_body: reply_body_text,
                         };
                         let _ = app.emit("new_message", &msg);
                     }
@@ -1166,10 +1454,27 @@ pub async fn start_sync(
         );
 
         slog(&sync_app, &sync_log, "info", "Sync loop starting...".into());
+        let _ = sync_app.emit("sync_status", "syncing");
+
+        // Initial sync — fetch room state before entering the continuous loop
         let settings = matrix_sdk::config::SyncSettings::default();
-        match client.sync(settings).await {
-            Ok(_) => slog_buf(&sync_log, "info", "Sync loop ended".into()),
-            Err(e) => slog_buf(&sync_log, "error", format!("Sync loop error: {}", e)),
+        match client.sync_once(settings).await {
+            Ok(response) => {
+                slog(&sync_app, &sync_log, "info", "Initial sync complete".into());
+                let _ = sync_app.emit("sync_status", "synced");
+
+                // Continue with incremental syncs using the token from initial sync
+                let settings = matrix_sdk::config::SyncSettings::default()
+                    .token(response.next_batch);
+                match client.sync(settings).await {
+                    Ok(_) => slog_buf(&sync_log, "info", "Sync loop ended".into()),
+                    Err(e) => slog_buf(&sync_log, "error", format!("Sync loop error: {}", e)),
+                }
+            }
+            Err(e) => {
+                slog(&sync_app, &sync_log, "error", format!("Initial sync failed: {}", e));
+                let _ = sync_app.emit("sync_status", "error");
+            }
         }
     });
 

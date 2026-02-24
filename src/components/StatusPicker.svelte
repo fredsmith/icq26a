@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { currentStatus } from '../lib/stores'
+  import { currentStatus, syncing } from '../lib/stores'
   import { setPresence } from '../lib/matrix'
   import type { PresenceStatus } from '../lib/types'
 
@@ -54,7 +54,13 @@
 
 <div class="status-picker">
   <button class="status-button" onclick={(e: MouseEvent) => { e.stopPropagation(); menuOpen = !menuOpen }}>
-    <span class="status-dot" style="background: {currentStatusInfo()?.color}"></span>
+    {#if $currentStatus === 'offline'}
+      <img src="/offline-flower.png" alt="" class="status-flower" />
+    {:else if $syncing}
+      <img src="/loading-flower.gif" alt="" class="status-flower" />
+    {:else}
+      <img src="/loaded-flower.png" alt="" class="status-flower" />
+    {/if}
     {currentStatusInfo()?.label}
   </button>
   {#if menuOpen}
@@ -65,7 +71,13 @@
           class:active={$currentStatus === status.value}
           onclick={(e: MouseEvent) => { e.stopPropagation(); selectStatus(status.value) }}
         >
-          <span class="status-dot" style="background: {status.color}"></span>
+          {#if status.value === 'online' || status.value === 'free_for_chat'}
+            <img src="/loaded-flower.png" alt="" class="status-flower" />
+          {:else if status.value === 'offline'}
+            <img src="/offline-flower.png" alt="" class="status-flower" />
+          {:else}
+            <span class="status-dot" style="background: {status.color}"></span>
+          {/if}
           {status.label}
         </button>
       {/each}
@@ -92,6 +104,20 @@
     display: flex;
     align-items: center;
     gap: 6px;
+    border: none;
+    box-shadow: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 11px;
+    color: #000;
+  }
+  .status-button:hover {
+    text-decoration: underline;
+  }
+  .status-flower {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
   }
   .status-dot {
     display: inline-block;

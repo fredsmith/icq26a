@@ -33,6 +33,23 @@ export interface Message {
   msg_type: 'text' | 'image' | 'file' | 'audio' | 'video' | 'unknown'
   media_url?: string | null
   filename?: string | null
+  in_reply_to?: string | null
+  reply_sender_name?: string | null
+  reply_body?: string | null
+}
+
+export interface TypingEvent {
+  room_id: string
+  user_ids: string[]
+  display_names: string[]
+}
+
+export interface MessageEditEvent {
+  room_id: string
+  original_event_id: string
+  new_body: string
+  sender: string
+  sender_name: string
 }
 
 export interface MessagesPage {

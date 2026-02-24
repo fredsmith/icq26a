@@ -33,8 +33,16 @@ export async function getRoomMessages(roomId: string, limit: number = 50, from?:
   return invoke('get_room_messages', { roomId, limit, from: from ?? null })
 }
 
-export async function sendMessage(roomId: string, body: string): Promise<void> {
-  return invoke('send_message', { roomId, body })
+export async function sendMessage(roomId: string, body: string, inReplyToEventId?: string): Promise<void> {
+  return invoke('send_message', { roomId, body, inReplyToEventId: inReplyToEventId ?? null })
+}
+
+export async function sendTyping(roomId: string, typing: boolean): Promise<void> {
+  return invoke('send_typing', { roomId, typing })
+}
+
+export async function markAsRead(roomId: string, eventId: string): Promise<void> {
+  return invoke('mark_as_read', { roomId, eventId })
 }
 
 export async function setPresence(status: string): Promise<void> {

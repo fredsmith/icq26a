@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte'
   import { getCurrentWindow } from '@tauri-apps/api/window'
-  import { getRoomMessages, getRoomMembers, sendMessage, getRooms, createDmRoom, fetchMedia } from '../lib/matrix'
+  import { getRoomMessages, getRoomMembers, sendMessage, sendTyping, markAsRead, getRooms, createDmRoom, fetchMedia } from '../lib/matrix'
   import { listen } from '@tauri-apps/api/event'
+  import { emit } from '@tauri-apps/api/event'
   import { ask } from '@tauri-apps/plugin-dialog'
-  import type { Message, Buddy } from '../lib/types'
+  import type { Message, Buddy, TypingEvent, MessageEditEvent } from '../lib/types'
   import { openUserInfoWindow, openDirectMessageWindow, openRoomInfoWindow } from '../lib/windows'
   import { linkify } from '../lib/linkify'
   import TitleBar from './TitleBar.svelte'
@@ -23,12 +24,29 @@
   let loadingOlder = $state(false)
   let endToken = $state<string | null>(null)
   let messagesDiv = $state<HTMLDivElement | undefined>(undefined)
-  let unlistenNewMsg: (() => void) | null = null
   let showNewMsgHint = $state(false)
+
+  // Typing indicator state
+  let typingUsers = $state<string[]>([])
+  let typingTimeout: ReturnType<typeof setTimeout> | null = null
+  const typingText = $derived(
+    typingUsers.length === 0 ? '' :
+    typingUsers.length === 1 ? `${typingUsers[0]} is typing...` :
+    `${typingUsers.join(', ')} are typing...`
+  )
+
+  // Reply state
+  let replyTo = $state<Message | null>(null)
+
+  // Context menus
+  let contextMenu = $state<{ x: number; y: number; member: Buddy } | null>(null)
+  let msgContextMenu = $state<{ x: number; y: number; msg: Message } | null>(null)
+
+  let unlisteners: (() => void)[] = []
+  let windowFocused = $state(true)
 
   // Sort members by most recent message, then filter by search term
   const sortedFilteredMembers = $derived.by(() => {
-    // Build a map of sender → most recent timestamp
     const lastActive = new Map<string, number>()
     for (const msg of messages) {
       const existing = lastActive.get(msg.sender) ?? 0
@@ -69,7 +87,9 @@
         scrollToBottom()
       }
     }
-    unlistenNewMsg = await listen<Message>('new_message', (event) => {
+
+    // Listen for new messages
+    unlisteners.push(await listen<Message>('new_message', (event) => {
       if (event.payload.room_id === roomId && event.payload.sender !== '') {
         messages = [...messages, event.payload]
         if (isNearBottom()) {
@@ -77,12 +97,59 @@
         } else {
           showNewMsgHint = true
         }
+        // Send read receipt if window is focused
+        if (windowFocused && event.payload.event_id) {
+          markAsRead(roomId, event.payload.event_id).catch(() => {})
+          emit('clear_unread', { room_id: roomId })
+        }
+      }
+    }))
+
+    // Listen for message edits
+    unlisteners.push(await listen<MessageEditEvent>('message_edited', (event) => {
+      if (event.payload.room_id === roomId) {
+        messages = messages.map(msg =>
+          msg.event_id === event.payload.original_event_id
+            ? { ...msg, body: event.payload.new_body }
+            : msg
+        )
+      }
+    }))
+
+    // Listen for typing events
+    unlisteners.push(await listen<TypingEvent>('typing', (event) => {
+      if (event.payload.room_id === roomId) {
+        typingUsers = event.payload.display_names
+      }
+    }))
+
+    // Track window focus for read receipts
+    const appWindow = getCurrentWindow()
+    const unlistenFocus = await appWindow.onFocusChanged(({ payload: focused }) => {
+      windowFocused = focused
+      if (focused && messages.length > 0) {
+        const lastMsg = messages[messages.length - 1]
+        if (lastMsg.event_id) {
+          markAsRead(roomId, lastMsg.event_id).catch(() => {})
+          emit('clear_unread', { room_id: roomId })
+        }
       }
     })
+    unlisteners.push(unlistenFocus)
+
+    // Mark as read on initial load if focused
+    if (windowFocused && messages.length > 0) {
+      const lastMsg = messages[messages.length - 1]
+      if (lastMsg.event_id) {
+        markAsRead(roomId, lastMsg.event_id).catch(() => {})
+        emit('clear_unread', { room_id: roomId })
+      }
+    }
   })
 
   onDestroy(() => {
-    if (unlistenNewMsg) unlistenNewMsg()
+    for (const fn of unlisteners) fn()
+    if (typingTimeout) clearTimeout(typingTimeout)
   })
 
   async function loadOlderMessages() {
@@ -132,20 +199,55 @@
     }, 0)
   }
 
+  function handleTypingInput() {
+    sendTyping(roomId, true).catch(() => {})
+    if (typingTimeout) clearTimeout(typingTimeout)
+    typingTimeout = setTimeout(() => {
+      sendTyping(roomId, false).catch(() => {})
+      typingTimeout = null
+    }, 3000)
+  }
+
   async function handleSend() {
     if (!newMessage.trim() || !roomId) return
     const body = newMessage
+    const replyEventId = replyTo?.event_id
     newMessage = ''
+    replyTo = null
+    if (typingTimeout) {
+      clearTimeout(typingTimeout)
+      typingTimeout = null
+    }
+    sendTyping(roomId, false).catch(() => {})
     try {
-      await sendMessage(roomId, body)
+      await sendMessage(roomId, body, replyEventId ?? undefined)
     } catch (e) {
       console.error('Failed to send:', e)
       newMessage = body
     }
   }
 
-  let contextMenu = $state<{ x: number; y: number; member: Buddy } | null>(null)
+  // Message context menu
+  function handleMsgContext(e: MouseEvent, msg: Message) {
+    e.preventDefault()
+    msgContextMenu = { x: e.clientX, y: e.clientY, msg }
+  }
 
+  function closeMsgContextMenu() {
+    msgContextMenu = null
+  }
+
+  function handleMsgReply() {
+    if (!msgContextMenu) return
+    replyTo = msgContextMenu.msg
+    msgContextMenu = null
+  }
+
+  function cancelReply() {
+    replyTo = null
+  }
+
+  // Member context menu
   function handleMemberContext(e: MouseEvent, member: Buddy) {
     e.preventDefault()
     contextMenu = { x: e.clientX, y: e.clientY, member }
@@ -246,7 +348,13 @@
             <p class="loading-text">Loading...</p>
           {:else}
             {#each messages as msg}
-              <div class="chat-message">
+              <div class="chat-message" oncontextmenu={(e: MouseEvent) => handleMsgContext(e, msg)}>
+                {#if msg.in_reply_to && (msg.reply_sender_name || msg.reply_body)}
+                  <div class="reply-quote">
+                    {#if msg.reply_sender_name}<span class="reply-quote-sender">{msg.reply_sender_name}</span>{/if}
+                    {#if msg.reply_body}<span class="reply-quote-body">{msg.reply_body.length > 80 ? msg.reply_body.slice(0, 80) + '...' : msg.reply_body}</span>{/if}
+                  </div>
+                {/if}
                 <div class="chat-message-header">
                   <span class="chat-sender">{msg.sender_name}</span>
                   <span class="chat-time">{formatTime(msg.timestamp)}</span>
@@ -267,10 +375,24 @@
         {/if}
       </div>
 
+      <!-- Typing indicator -->
+      {#if typingText}
+        <div class="typing-indicator">{typingText}</div>
+      {/if}
+
+      <!-- Reply preview -->
+      {#if replyTo}
+        <div class="reply-preview">
+          <span class="reply-preview-text">Reply to <b>{replyTo.sender_name}</b>: {replyTo.body.length > 60 ? replyTo.body.slice(0, 60) + '...' : replyTo.body}</span>
+          <button class="reply-preview-cancel" onclick={cancelReply}>X</button>
+        </div>
+      {/if}
+
       <!-- Input area -->
       <div class="chat-input">
         <textarea
           bind:value={newMessage}
+          oninput={handleTypingInput}
           onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }}}
           rows="3"
           placeholder="Type a message..."
@@ -301,13 +423,22 @@
     </div>
   </div>
 
-  <!-- Context menu -->
+  <!-- Member context menu -->
   {#if contextMenu}
     <div class="context-overlay" onclick={closeContextMenu} onkeydown={(e: KeyboardEvent) => { if (e.key === 'Escape') closeContextMenu() }} role="presentation">
     </div>
     <div class="context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px;">
       <button class="context-item" onclick={handleContextMessage}>Message</button>
       <button class="context-item" onclick={handleContextUserInfo}>User Info</button>
+    </div>
+  {/if}
+
+  <!-- Message context menu -->
+  {#if msgContextMenu}
+    <div class="context-overlay" onclick={closeMsgContextMenu} onkeydown={(e: KeyboardEvent) => { if (e.key === 'Escape') closeMsgContextMenu() }} role="presentation">
+    </div>
+    <div class="context-menu" style="left: {msgContextMenu.x}px; top: {msgContextMenu.y}px;">
+      <button class="context-item" onclick={handleMsgReply}>Reply</button>
     </div>
   {/if}
 </div>
@@ -383,6 +514,53 @@
   .chat-message-body {
     padding-left: 8px;
   }
+  .reply-quote {
+    border-left: 3px solid #666;
+    padding: 1px 6px;
+    margin-bottom: 2px;
+    font-size: 10px;
+    color: #999;
+    background: #1a1a1a;
+  }
+  .reply-quote-sender {
+    font-weight: bold;
+    color: #888;
+    margin-right: 4px;
+  }
+  .typing-indicator {
+    font-size: 10px;
+    color: #888;
+    padding: 1px 8px;
+    font-style: italic;
+    font-family: 'Courier New', monospace;
+    background: #111;
+  }
+  .reply-preview {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    background: #1a1a2e;
+    border: 1px solid #333;
+    font-size: 10px;
+    color: #ccc;
+    font-family: 'Courier New', monospace;
+  }
+  .reply-preview-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .reply-preview-cancel {
+    font-size: 10px;
+    padding: 0 4px;
+    cursor: pointer;
+    border: 1px solid #555;
+    background: #333;
+    color: #ccc;
+    line-height: 14px;
+  }
   .message-image {
     max-width: 200px;
     max-height: 200px;
@@ -423,6 +601,15 @@
     font-size: 10px;
     padding: 1px 8px;
     width: 100%;
+    border: none;
+    box-shadow: none;
+    background: transparent;
+    cursor: pointer;
+    color: #000;
+    text-align: left;
+  }
+  .info-btn:hover {
+    text-decoration: underline;
   }
   .members-header {
     font-weight: bold;
@@ -458,9 +645,11 @@
     text-overflow: ellipsis;
     width: 100%;
     border: none;
+    box-shadow: none;
     background: transparent;
     text-align: left;
     font-size: 11px;
+    color: #000;
   }
   .member-row.clickable {
     cursor: pointer;

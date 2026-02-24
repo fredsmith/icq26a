@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { listen } from '@tauri-apps/api/event'
-  import { buddyList, rooms, unreadCounts, isLoggedIn, currentUserId, currentStatus } from '../lib/stores'
+  import { buddyList, rooms, unreadCounts, isLoggedIn, currentUserId, currentStatus, syncing } from '../lib/stores'
   import { getBuddyList, getRooms, matrixLogout, matrixDisconnect, tryRestoreSession, leaveRoom, removeBuddy } from '../lib/matrix'
   import { invoke } from '@tauri-apps/api/core'
   import type { Buddy, Message } from '../lib/types'
@@ -19,6 +19,7 @@
   async function refreshLists() {
     if (refreshing) return
     refreshing = true
+    syncing.set(true)
     try {
       const fetchedBuddies = await getBuddyList()
       buddyList.set(fetchedBuddies)
@@ -28,6 +29,7 @@
       console.error('Failed to load buddy list:', e)
     } finally {
       refreshing = false
+      syncing.set(false)
     }
   }
 
@@ -46,6 +48,22 @@
 
     await listen('rooms_changed', () => {
       refreshLists()
+    })
+
+    await listen<string>('sync_status', (event) => {
+      if (event.payload === 'synced') {
+        refreshLists()
+      }
+    })
+
+    await listen<{ room_id: string }>('clear_unread', (event) => {
+      const roomId = event.payload.room_id
+      if (roomId) {
+        unreadCounts.update(counts => {
+          const { [roomId]: _, ...rest } = counts
+          return rest
+        })
+      }
     })
   })
 
@@ -84,11 +102,12 @@
 
   async function handleReconnect() {
     currentStatus.set('online')
+    syncing.set(true)
     try {
       await tryRestoreSession()
       await invoke('start_sync')
-      await refreshLists()
     } catch (e) {
+      syncing.set(false)
       console.error('Reconnect failed:', e)
     }
   }
@@ -277,6 +296,18 @@
     padding: 3px 4px;
     border-bottom: 1px solid #808080;
   }
+  .buddy-actions button {
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    padding: 2px 6px;
+    font-size: 11px;
+    cursor: pointer;
+    color: #000;
+  }
+  .buddy-actions button:hover {
+    text-decoration: underline;
+  }
   .buddy-scroll {
     flex: 1;
     overflow-y: auto;
@@ -300,11 +331,13 @@
     gap: 6px;
     width: 100%;
     border: none;
+    box-shadow: none;
     background: transparent;
     padding: 2px 12px;
     text-align: left;
     cursor: pointer;
     font-size: 11px;
+    color: #000;
   }
   .buddy-row:hover {
     background: #000080;
@@ -390,5 +423,17 @@
     gap: 4px;
     padding: 4px;
     border-top: 1px solid #808080;
+  }
+  .buddy-toolbar button {
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    padding: 2px 6px;
+    font-size: 11px;
+    cursor: pointer;
+    color: #000;
+  }
+  .buddy-toolbar button:hover {
+    text-decoration: underline;
   }
 </style>

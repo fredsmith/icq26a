@@ -62,6 +62,8 @@ pub fn run() {
             commands::create_room,
             commands::leave_room,
             commands::remove_buddy,
+            commands::send_typing,
+            commands::mark_as_read,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -32,6 +32,25 @@ pub struct Message {
     pub msg_type: String,
     pub media_url: Option<String>,
     pub filename: Option<String>,
+    pub in_reply_to: Option<String>,
+    pub reply_sender_name: Option<String>,
+    pub reply_body: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypingEvent {
+    pub room_id: String,
+    pub user_ids: Vec<String>,
+    pub display_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageEditEvent {
+    pub room_id: String,
+    pub original_event_id: String,
+    pub new_body: String,
+    pub sender: String,
+    pub sender_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

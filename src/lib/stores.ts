@@ -8,6 +8,7 @@ export const rooms = writable<Room[]>([])
 export const currentStatus = writable<PresenceStatus>('online')
 export const activeRoomId = writable<string | null>(null)
 export const unreadCounts = writable<Record<string, number>>({})
+export const syncing = writable(false)
 
 const PREFS_KEY = 'icq26a_preferences'
 

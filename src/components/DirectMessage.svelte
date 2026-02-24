@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte'
   import { getCurrentWindow } from '@tauri-apps/api/window'
-  import { getRoomMessages, getRoomMembers, sendMessage, fetchMedia } from '../lib/matrix'
+  import { getRoomMessages, getRoomMembers, sendMessage, sendTyping, markAsRead, fetchMedia } from '../lib/matrix'
   import { invoke } from '@tauri-apps/api/core'
   import { listen } from '@tauri-apps/api/event'
-  import type { Message } from '../lib/types'
+  import { emit } from '@tauri-apps/api/event'
+  import type { Message, TypingEvent, MessageEditEvent } from '../lib/types'
   import { openUserInfoWindow } from '../lib/windows'
   import { linkify } from '../lib/linkify'
   import TitleBar from './TitleBar.svelte'
@@ -21,9 +22,26 @@
   let loadingOlder = $state(false)
   let endToken = $state<string | null>(null)
   let messagesDiv = $state<HTMLDivElement | undefined>(undefined)
-  let unlistenNewMsg: (() => void) | null = null
   let dmUserId = $state<string | null>(null)
   let showNewMsgHint = $state(false)
+
+  // Typing indicator state
+  let typingUsers = $state<string[]>([])
+  let typingTimeout: ReturnType<typeof setTimeout> | null = null
+  const typingText = $derived(
+    typingUsers.length === 0 ? '' :
+    typingUsers.length === 1 ? `${typingUsers[0]} is typing...` :
+    `${typingUsers.join(', ')} are typing...`
+  )
+
+  // Reply state
+  let replyTo = $state<Message | null>(null)
+
+  // Message context menu
+  let msgContextMenu = $state<{ x: number; y: number; msg: Message } | null>(null)
+
+  let unlisteners: (() => void)[] = []
+  let windowFocused = $state(true)
 
   onMount(async () => {
     if (roomId) {
@@ -36,7 +54,9 @@
         if (other) dmUserId = other.user_id
       } catch { /* ignore */ }
     }
-    unlistenNewMsg = await listen<Message>('new_message', (event) => {
+
+    // Listen for new messages
+    unlisteners.push(await listen<Message>('new_message', (event) => {
       if (event.payload.room_id === roomId && event.payload.sender !== '') {
         messages = [...messages, event.payload]
         if (isNearBottom()) {
@@ -44,12 +64,59 @@
         } else {
           showNewMsgHint = true
         }
+        // Send read receipt if window is focused
+        if (windowFocused && event.payload.event_id) {
+          markAsRead(roomId, event.payload.event_id).catch(() => {})
+          emit('clear_unread', { room_id: roomId })
+        }
+      }
+    }))
+
+    // Listen for message edits
+    unlisteners.push(await listen<MessageEditEvent>('message_edited', (event) => {
+      if (event.payload.room_id === roomId) {
+        messages = messages.map(msg =>
+          msg.event_id === event.payload.original_event_id
+            ? { ...msg, body: event.payload.new_body }
+            : msg
+        )
+      }
+    }))
+
+    // Listen for typing events
+    unlisteners.push(await listen<TypingEvent>('typing', (event) => {
+      if (event.payload.room_id === roomId) {
+        typingUsers = event.payload.display_names
+      }
+    }))
+
+    // Track window focus for read receipts
+    const appWindow = getCurrentWindow()
+    const unlistenFocus = await appWindow.onFocusChanged(({ payload: focused }) => {
+      windowFocused = focused
+      if (focused && messages.length > 0) {
+        const lastMsg = messages[messages.length - 1]
+        if (lastMsg.event_id) {
+          markAsRead(roomId, lastMsg.event_id).catch(() => {})
+          emit('clear_unread', { room_id: roomId })
+        }
       }
     })
+    unlisteners.push(unlistenFocus)
+
+    // Mark as read on initial load if focused
+    if (windowFocused && messages.length > 0) {
+      const lastMsg = messages[messages.length - 1]
+      if (lastMsg.event_id) {
+        markAsRead(roomId, lastMsg.event_id).catch(() => {})
+        emit('clear_unread', { room_id: roomId })
+      }
+    }
   })
 
   onDestroy(() => {
-    if (unlistenNewMsg) unlistenNewMsg()
+    for (const fn of unlisteners) fn()
+    if (typingTimeout) clearTimeout(typingTimeout)
   })
 
   async function loadMessages() {
@@ -114,12 +181,29 @@
     }, 0)
   }
 
+  function handleTypingInput() {
+    sendTyping(roomId, true).catch(() => {})
+    if (typingTimeout) clearTimeout(typingTimeout)
+    typingTimeout = setTimeout(() => {
+      sendTyping(roomId, false).catch(() => {})
+      typingTimeout = null
+    }, 3000)
+  }
+
   async function handleSend() {
     if (!newMessage.trim() || !roomId) return
     const body = newMessage
+    const replyEventId = replyTo?.event_id
     newMessage = ''
+    replyTo = null
+    // Stop typing indicator
+    if (typingTimeout) {
+      clearTimeout(typingTimeout)
+      typingTimeout = null
+    }
+    sendTyping(roomId, false).catch(() => {})
     try {
-      await sendMessage(roomId, body)
+      await sendMessage(roomId, body, replyEventId ?? undefined)
     } catch (e) {
       console.error('Failed to send:', e)
       newMessage = body
@@ -137,6 +221,25 @@
     } catch (e) {
       console.error('Failed to attach file:', e)
     }
+  }
+
+  function handleMsgContext(e: MouseEvent, msg: Message) {
+    e.preventDefault()
+    msgContextMenu = { x: e.clientX, y: e.clientY, msg }
+  }
+
+  function closeMsgContextMenu() {
+    msgContextMenu = null
+  }
+
+  function handleReply() {
+    if (!msgContextMenu) return
+    replyTo = msgContextMenu.msg
+    msgContextMenu = null
+  }
+
+  function cancelReply() {
+    replyTo = null
   }
 
   function loadMedia(node: HTMLImageElement, mxcUrl: string) {
@@ -206,7 +309,13 @@
           <p class="empty-text">No messages yet</p>
         {:else}
           {#each messages as msg}
-            <div class="message">
+            <div class="message" oncontextmenu={(e: MouseEvent) => handleMsgContext(e, msg)}>
+              {#if msg.in_reply_to && (msg.reply_sender_name || msg.reply_body)}
+                <div class="reply-quote">
+                  {#if msg.reply_sender_name}<span class="reply-quote-sender">{msg.reply_sender_name}</span>{/if}
+                  {#if msg.reply_body}<span class="reply-quote-body">{msg.reply_body.length > 80 ? msg.reply_body.slice(0, 80) + '...' : msg.reply_body}</span>{/if}
+                </div>
+              {/if}
               <span class="message-sender">{msg.sender_name}:</span>
               {#if msg.msg_type === 'image' && msg.media_url}
                 <span class="message-body"><img class="message-image" use:loadMedia={msg.media_url} alt={msg.filename || msg.body} /></span>
@@ -224,12 +333,26 @@
       {/if}
     </div>
 
+    <!-- Typing indicator -->
+    {#if typingText}
+      <div class="typing-indicator">{typingText}</div>
+    {/if}
+
+    <!-- Reply preview -->
+    {#if replyTo}
+      <div class="reply-preview">
+        <span class="reply-preview-text">Reply to <b>{replyTo.sender_name}</b>: {replyTo.body.length > 60 ? replyTo.body.slice(0, 60) + '...' : replyTo.body}</span>
+        <button class="reply-preview-cancel" onclick={cancelReply}>X</button>
+      </div>
+    {/if}
+
     <!-- Input area -->
     <div class="dm-input">
       <label for="msg-input">Enter Message:</label>
       <textarea
         id="msg-input"
         bind:value={newMessage}
+        oninput={handleTypingInput}
         onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }}}
         rows="3"
       ></textarea>
@@ -243,6 +366,15 @@
     </div>
   </div>
 </div>
+
+<!-- Message context menu -->
+{#if msgContextMenu}
+  <div class="context-overlay" onclick={closeMsgContextMenu} onkeydown={(e: KeyboardEvent) => { if (e.key === 'Escape') closeMsgContextMenu() }} role="presentation">
+  </div>
+  <div class="context-menu" style="left: {msgContextMenu.x}px; top: {msgContextMenu.y}px;">
+    <button class="context-item" onclick={handleReply}>Reply</button>
+  </div>
+{/if}
 
 <style>
   .dm-window {
@@ -327,6 +459,47 @@
     color: #0000ee;
     text-decoration: underline;
   }
+  .reply-quote {
+    border-left: 3px solid #808080;
+    padding: 1px 6px;
+    margin-bottom: 1px;
+    font-size: 10px;
+    color: #666;
+    background: #f0f0f0;
+  }
+  .reply-quote-sender {
+    font-weight: bold;
+    margin-right: 4px;
+  }
+  .typing-indicator {
+    font-size: 10px;
+    color: #666;
+    padding: 1px 8px;
+    font-style: italic;
+  }
+  .reply-preview {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    background: #e8e8ff;
+    border: 1px solid #c0c0d0;
+    font-size: 10px;
+  }
+  .reply-preview-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .reply-preview-cancel {
+    font-size: 10px;
+    padding: 0 4px;
+    cursor: pointer;
+    border: 1px solid #808080;
+    background: #c0c0c0;
+    line-height: 14px;
+  }
   .dm-input {
     padding: 0 4px;
   }
@@ -350,5 +523,35 @@
     text-align: center;
     color: #888;
     padding: 20px;
+  }
+  .context-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 99;
+  }
+  .context-menu {
+    position: fixed;
+    z-index: 100;
+    background: #c0c0c0;
+    border: 2px outset #c0c0c0;
+    padding: 2px;
+    min-width: 80px;
+  }
+  .context-item {
+    display: block;
+    width: 100%;
+    border: none;
+    background: transparent;
+    padding: 2px 16px;
+    text-align: left;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .context-item:hover {
+    background: #000080;
+    color: white;
   }
 </style>
