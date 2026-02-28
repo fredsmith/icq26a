@@ -26,6 +26,7 @@ export async function openChildWindow(opts: ChildWindowOptions) {
     center: true,
     parent: opts.parent,
     resizable: opts.resizable,
+    zoomHotkeysEnabled: false,
   })
 }
 

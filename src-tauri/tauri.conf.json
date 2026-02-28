@@ -16,7 +16,8 @@
         "title": "ICQ26a",
         "width": 300,
         "height": 480,
-        "decorations": false
+        "decorations": false,
+        "zoomHotkeysEnabled": false
       }
     ],
     "security": {
