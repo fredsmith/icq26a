@@ -2,6 +2,38 @@ import '98.css'
 import './app.css'
 import { mount } from 'svelte'
 import { open } from '@tauri-apps/plugin-shell'
+import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
+
+const ZOOM_STEP = 0.1
+const MIN_ZOOM = 0.5
+const MAX_ZOOM = 3.0
+let zoomFactor = 1.0
+let baseSize: { width: number; height: number } | null = null
+
+document.addEventListener('keydown', async (e) => {
+  if (!e.metaKey) return
+  if (e.key !== '=' && e.key !== '+' && e.key !== '-') return
+  e.preventDefault()
+
+  const win = getCurrentWindow()
+  if (!baseSize) {
+    const s = await win.innerSize()
+    const dpr = window.devicePixelRatio || 1
+    baseSize = { width: Math.round(s.width / dpr), height: Math.round(s.height / dpr) }
+  }
+
+  if (e.key === '=' || e.key === '+') {
+    zoomFactor = Math.min(MAX_ZOOM, +(zoomFactor + ZOOM_STEP).toFixed(1))
+  } else {
+    zoomFactor = Math.max(MIN_ZOOM, +(zoomFactor - ZOOM_STEP).toFixed(1))
+  }
+
+  document.documentElement.style.zoom = String(zoomFactor)
+  await win.setSize(new LogicalSize(
+    Math.round(baseSize.width * zoomFactor),
+    Math.round(baseSize.height * zoomFactor),
+  ))
+})
 
 // Intercept clicks on <a target="_blank"> to open in system browser
 document.addEventListener('click', (e) => {
