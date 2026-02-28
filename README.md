@@ -26,9 +26,18 @@ A Matrix chat client with the look and feel of ICQ 98a, built with Tauri, Svelte
 
 ## Installation
 
-Check the [latest release](https://github.com/fredsmith/icq26a/releases) for your platform of choice. 
+Check the [latest release](https://github.com/fredsmith/icq26a/releases) for your platform of choice.
 
-### MacOS special instructions
+### Homebrew (macOS)
+
+```bash
+brew tap fredsmith/icq26a https://github.com/fredsmith/icq26a
+brew install --cask icq26a
+```
+
+No quarantine workaround needed — Homebrew handles it automatically.
+
+### MacOS special instructions (manual install)
 
 After you download the client, you will need to allowlist it in MacOS's privacy & Security
 screen to run it.  You can also run `xattr -d com.apple.quarantine /Applications/ICQ26a.app`
