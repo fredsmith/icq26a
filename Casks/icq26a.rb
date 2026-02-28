@@ -1,0 +1,20 @@
+cask "icq26a" do
+  version "0.1.2"
+
+  on_arm do
+    url "https://github.com/fredsmith/icq26a/releases/download/v#{version}/ICQ26a_#{version}_aarch64.dmg"
+    sha256 "PLACEHOLDER" # :arm64
+  end
+  on_intel do
+    url "https://github.com/fredsmith/icq26a/releases/download/v#{version}/ICQ26a_#{version}_x64.dmg"
+    sha256 "PLACEHOLDER" # :x64
+  end
+
+  name "ICQ26a"
+  desc "Matrix chat client styled after ICQ 98a"
+  homepage "https://github.com/fredsmith/icq26a"
+  quarantine false # app is unsigned; skip Gatekeeper quarantine
+
+  app "ICQ26a.app"
+  zap trash: ["~/Library/Application Support/com.icq26a.app"]
+end
