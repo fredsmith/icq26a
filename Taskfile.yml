@@ -1,0 +1,27 @@
+version: "3"
+
+tasks:
+  dev:
+    desc: Run development server with hot reload
+    deps: [install]
+    cmd: npm run tauri dev
+
+  build:
+    desc: Generate a production binary for the current platform
+    deps: [install]
+    cmd: npm run tauri build
+
+  install:
+    desc: Install frontend dependencies
+    cmd: npm install
+    status:
+      - test -d node_modules
+
+  clean:
+    desc: Clean all build artifacts, worktrees, and caches
+    cmds:
+      - rm -rf dist
+      - rm -rf node_modules
+      - cargo clean --manifest-path src-tauri/Cargo.toml
+      - rm -rf .claude/worktrees
+      - rm -rf .worktrees
