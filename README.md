@@ -32,10 +32,10 @@ Check the [latest release](https://github.com/fredsmith/icq26a/releases) for you
 
 ```bash
 brew tap fredsmith/icq26a https://github.com/fredsmith/icq26a
-brew install --cask icq26a
+brew install --cask --no-quarantine icq26a
 ```
 
-No quarantine workaround needed — Homebrew handles it automatically.
+The `--no-quarantine` flag is needed because the app is unsigned.
 
 ### MacOS special instructions (manual install)
 

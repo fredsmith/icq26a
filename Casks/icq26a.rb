@@ -13,7 +13,6 @@ cask "icq26a" do
   name "ICQ26a"
   desc "Matrix chat client styled after ICQ 98a"
   homepage "https://github.com/fredsmith/icq26a"
-  quarantine false # app is unsigned; skip Gatekeeper quarantine
 
   app "ICQ26a.app"
   zap trash: ["~/Library/Application Support/com.icq26a.app"]
