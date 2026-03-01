@@ -91,6 +91,14 @@ const windowType = params.get('window')
   } else if (windowType === 'joinroom') {
     const mod = await import('./components/JoinRoom.svelte')
     component = mod.default
+  } else if (windowType === 'browsespaces') {
+    const mod = await import('./components/BrowseSpaces.svelte')
+    component = mod.default
+    const spaceId = params.get('spaceId')
+    const spaceName = params.get('spaceName')
+    if (spaceId && spaceName) {
+      props = { spaceId, spaceName }
+    }
   } else {
     const mod = await import('./App.svelte')
     component = mod.default

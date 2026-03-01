@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Buddy, Room, Message, MessagesPage, LoginCredentials, LogEntry, UserProfile, RoomProfile, InviteInfo } from './types'
+import type { Buddy, Room, Space, Message, MessagesPage, LoginCredentials, LogEntry, UserProfile, RoomProfile, InviteInfo, RoomTagMap, PublicSpace, SpaceChild } from './types'
 
 export async function matrixLogin(credentials: LoginCredentials): Promise<string> {
   return invoke('matrix_login', { credentials })
@@ -27,6 +27,10 @@ export async function getRoomMembers(roomId: string): Promise<Buddy[]> {
 
 export async function getRooms(): Promise<Room[]> {
   return invoke('get_rooms')
+}
+
+export async function getSpaces(): Promise<Space[]> {
+  return invoke('get_spaces')
 }
 
 export async function getRoomMessages(roomId: string, limit: number = 50, from?: string): Promise<MessagesPage> {
@@ -131,4 +135,24 @@ export async function setDockBadge(count: number): Promise<void> {
 
 export async function fetchMedia(mxcUrl: string): Promise<string> {
   return invoke('fetch_media', { mxcUrl })
+}
+
+export async function getRoomTags(): Promise<RoomTagMap> {
+  return invoke('get_room_tags')
+}
+
+export async function setRoomTag(roomId: string, tag: string): Promise<void> {
+  return invoke('set_room_tag', { roomId, tag })
+}
+
+export async function removeRoomTag(roomId: string, tag: string): Promise<void> {
+  return invoke('remove_room_tag', { roomId, tag })
+}
+
+export async function searchSpaces(query: string, limit?: number, server?: string): Promise<PublicSpace[]> {
+  return invoke('search_spaces', { query, limit, server })
+}
+
+export async function getSpaceHierarchy(spaceId: string): Promise<SpaceChild[]> {
+  return invoke('get_space_hierarchy', { spaceId })
 }

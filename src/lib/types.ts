@@ -24,6 +24,12 @@ export interface Room {
   unread_count: number
 }
 
+export interface Space {
+  room_id: string
+  name: string
+  child_room_ids: string[]
+}
+
 export interface Message {
   room_id: string
   event_id: string
@@ -101,6 +107,8 @@ export interface RoomProfile {
   member_count: number
 }
 
+export type RoomTagMap = Record<string, string[]>
+
 export interface LoginCredentials {
   homeserver: string
   username: string
@@ -133,4 +141,21 @@ export interface VerificationEmojisEvent {
   flow_id: string
   user_id: string
   emojis: VerificationEmoji[]
+}
+
+export interface PublicSpace {
+  room_id: string
+  name: string
+  topic: string | null
+  num_joined_members: number
+  alias: string | null
+}
+
+export interface SpaceChild {
+  room_id: string
+  name: string
+  topic: string | null
+  num_joined_members: number
+  room_type: string | null
+  is_joined: boolean
 }

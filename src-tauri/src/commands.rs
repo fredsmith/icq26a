@@ -1,8 +1,8 @@
 use crate::matrix_client::{
     Buddy, InviteInfo, LogEntry, LoginCredentials, MatrixState, Message, MessageDeletedEvent,
-    MessageEditEvent, MessagesPage, PersistedSession, ReactionEvent, Room, RoomProfile, ServerLog,
-    SharedRoom, TypingEvent, UserProfile, VerificationEmoji, VerificationEmojisEvent,
-    VerificationEvent,
+    MessageEditEvent, MessagesPage, PersistedSession, PublicSpace, ReactionEvent, Room,
+    RoomProfile, ServerLog, SharedRoom, Space, SpaceChild, TypingEvent, UserProfile,
+    VerificationEmoji, VerificationEmojisEvent, VerificationEvent,
 };
 use matrix_sdk::{Client, ServerName};
 use tauri::{Emitter, State};
@@ -1000,6 +1000,10 @@ pub async fn get_rooms(
 
     let mut rooms = Vec::new();
     for room in client.joined_rooms() {
+        // Skip space rooms — they are handled by get_spaces
+        if room.is_space() {
+            continue;
+        }
         let is_direct = room.is_direct().await.unwrap_or(false);
         rooms.push(Room {
             room_id: room.room_id().to_string(),
@@ -1011,6 +1015,78 @@ pub async fn get_rooms(
     }
     slog(&app, &log, "info", format!("get_rooms: returning {} rooms", rooms.len()));
     Ok(rooms)
+}
+
+#[tauri::command]
+pub async fn get_spaces(
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<Vec<Space>, String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", "get_spaces: fetching joined spaces...".into());
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    // Collect all joined room IDs for filtering children to only joined rooms
+    let joined_room_ids: std::collections::HashSet<String> = client
+        .joined_rooms()
+        .iter()
+        .map(|r| r.room_id().to_string())
+        .collect();
+
+    let mut spaces = Vec::new();
+    for room in client.joined_rooms() {
+        if !room.is_space() {
+            continue;
+        }
+
+        let name = resolve_room_name(client, &room, false).await;
+
+        // Read m.space.child state events from the local store
+        let mut child_room_ids = Vec::new();
+        use matrix_sdk::deserialized_responses::SyncOrStrippedState;
+        use matrix_sdk::ruma::events::space::child::SpaceChildEventContent;
+        use matrix_sdk::ruma::events::SyncStateEvent;
+
+        match room.get_state_events_static::<SpaceChildEventContent>().await {
+            Ok(raw_events) => {
+                for raw_event in raw_events {
+                    match raw_event.deserialize() {
+                        Ok(SyncOrStrippedState::Sync(SyncStateEvent::Original(e))) => {
+                            let child_id = e.state_key.to_string();
+                            if !e.content.via.is_empty() && joined_room_ids.contains(&child_id) {
+                                child_room_ids.push(child_id);
+                            }
+                        }
+                        Ok(SyncOrStrippedState::Sync(SyncStateEvent::Redacted(_))) => {}
+                        Ok(SyncOrStrippedState::Stripped(e)) => {
+                            let child_id = e.state_key.to_string();
+                            let via_non_empty = e.content.via.as_ref().is_some_and(|v| !v.is_empty());
+                            if via_non_empty && joined_room_ids.contains(&child_id) {
+                                child_room_ids.push(child_id);
+                            }
+                        }
+                        Err(e) => {
+                            slog(&app, &log, "warn", format!("get_spaces: failed to deserialize space child event: {}", e));
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                slog(&app, &log, "warn", format!("get_spaces: failed to read space children for {}: {}", room.room_id(), e));
+            }
+        }
+
+        spaces.push(Space {
+            room_id: room.room_id().to_string(),
+            name,
+            child_room_ids,
+        });
+    }
+
+    slog(&app, &log, "info", format!("get_spaces: returning {} spaces", spaces.len()));
+    Ok(spaces)
 }
 
 #[tauri::command]
@@ -2353,6 +2429,117 @@ pub async fn reject_invite(
 }
 
 #[tauri::command]
+pub async fn get_room_tags(
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", "get_room_tags: fetching tags for all joined rooms...".into());
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    use matrix_sdk::ruma::api::client::tag::get_tags;
+    use matrix_sdk::ruma::events::tag::TagName;
+
+    let user_id = client.user_id().ok_or("No user ID")?.to_owned();
+    let mut result = std::collections::HashMap::new();
+
+    for room in client.joined_rooms() {
+        if room.is_space() {
+            continue;
+        }
+        let room_id = room.room_id().to_owned();
+        let request = get_tags::v3::Request::new(user_id.clone(), room_id.clone());
+        match client.send(request).await {
+            Ok(response) => {
+                let user_tags: Vec<String> = response
+                    .tags
+                    .keys()
+                    .filter_map(|tag| {
+                        if let TagName::User(user_tag) = tag {
+                            Some(user_tag.as_ref().strip_prefix("u.").unwrap_or(user_tag.as_ref()).to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if !user_tags.is_empty() {
+                    result.insert(room_id.to_string(), user_tags);
+                }
+            }
+            Err(e) => {
+                slog(&app, &log, "warn", format!("get_room_tags: failed to get tags for {}: {}", room_id, e));
+            }
+        }
+    }
+
+    slog(&app, &log, "info", format!("get_room_tags: found tags for {} rooms", result.len()));
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn set_room_tag(
+    room_id: String,
+    tag: String,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<(), String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", format!("set_room_tag: {} -> u.{}", room_id, tag));
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    use matrix_sdk::ruma::api::client::tag::create_tag;
+    use matrix_sdk::ruma::events::tag::TagInfo;
+
+    let user_id = client.user_id().ok_or("No user ID")?.to_owned();
+    let parsed_room_id = matrix_sdk::ruma::OwnedRoomId::try_from(room_id.as_str())
+        .map_err(|e| format!("Invalid room ID: {}", e))?;
+
+    let tag_string = format!("u.{}", tag);
+    let request = create_tag::v3::Request::new(user_id, parsed_room_id, tag_string, TagInfo::default());
+    client.send(request).await.map_err(|e| {
+        slog(&app, &log, "error", format!("set_room_tag failed: {}", e));
+        format!("Failed to set tag: {}", e)
+    })?;
+
+    slog(&app, &log, "info", format!("set_room_tag: tag set successfully"));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn remove_room_tag(
+    room_id: String,
+    tag: String,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<(), String> {
+    let log = state.log.clone();
+    slog(&app, &log, "info", format!("remove_room_tag: {} -> u.{}", room_id, tag));
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    use matrix_sdk::ruma::api::client::tag::delete_tag;
+
+    let user_id = client.user_id().ok_or("No user ID")?.to_owned();
+    let parsed_room_id = matrix_sdk::ruma::OwnedRoomId::try_from(room_id.as_str())
+        .map_err(|e| format!("Invalid room ID: {}", e))?;
+
+    let tag_string = format!("u.{}", tag);
+    let request = delete_tag::v3::Request::new(user_id, parsed_room_id, tag_string);
+    client.send(request).await.map_err(|e| {
+        slog(&app, &log, "error", format!("remove_room_tag failed: {}", e));
+        format!("Failed to remove tag: {}", e)
+    })?;
+
+    slog(&app, &log, "info", format!("remove_room_tag: tag removed successfully"));
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn set_dock_badge(count: u32) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -2371,6 +2558,220 @@ pub async fn set_dock_badge(count: u32) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn search_spaces(
+    query: String,
+    limit: Option<u32>,
+    server: Option<String>,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<Vec<PublicSpace>, String> {
+    let log = state.log.clone();
+    slog(
+        &app,
+        &log,
+        "info",
+        format!("search_spaces: query={} server={:?}", query, server),
+    );
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    // If query looks like a room alias, resolve it directly via federation
+    // Supports: #space:server.org or #space (with server field filled in)
+    let alias_str = if query.starts_with('#') && query.contains(':') {
+        Some(query.clone())
+    } else if query.starts_with('#') && server.is_some() {
+        Some(format!("{}:{}", query, server.as_ref().unwrap()))
+    } else {
+        None
+    };
+
+    if let Some(alias_str) = alias_str {
+        use matrix_sdk::ruma::api::client::alias::get_alias;
+        use matrix_sdk::ruma::api::client::space::get_hierarchy;
+        use matrix_sdk::ruma::uint;
+        use matrix_sdk::ruma::OwnedRoomAliasId;
+
+        let alias = OwnedRoomAliasId::try_from(alias_str.as_str())
+            .map_err(|e| format!("Invalid room alias: {}", e))?;
+
+        let alias_response = client
+            .send(get_alias::v3::Request::new(alias.clone()))
+            .await
+            .map_err(|e| {
+                slog(&app, &log, "error", format!("Alias resolution failed: {}", e));
+                format!("Could not resolve alias: {}", e)
+            })?;
+
+        let room_id = alias_response.room_id;
+
+        // Fetch hierarchy to get space metadata from the first entry
+        let mut hier_request = get_hierarchy::v1::Request::new(room_id.clone());
+        hier_request.limit = Some(uint!(1));
+        hier_request.max_depth = Some(uint!(0));
+
+        let hier_response = client.send(hier_request).await.map_err(|e| {
+            slog(&app, &log, "error", format!("Space hierarchy fetch failed: {}", e));
+            format!("Space hierarchy fetch failed: {}", e)
+        })?;
+
+        let space = if let Some(root) = hier_response.rooms.first() {
+            PublicSpace {
+                room_id: root.summary.room_id.to_string(),
+                name: root
+                    .summary
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| root.summary.room_id.to_string()),
+                topic: root.summary.topic.clone(),
+                num_joined_members: root.summary.num_joined_members.into(),
+                alias: Some(alias.to_string()),
+            }
+        } else {
+            PublicSpace {
+                room_id: room_id.to_string(),
+                name: alias.to_string(),
+                topic: None,
+                num_joined_members: 0,
+                alias: Some(alias.to_string()),
+            }
+        };
+
+        slog(
+            &app,
+            &log,
+            "info",
+            format!("search_spaces: resolved alias to {}", space.room_id),
+        );
+        return Ok(vec![space]);
+    }
+
+    use matrix_sdk::ruma::api::client::directory::get_public_rooms_filtered;
+    use matrix_sdk::ruma::directory::{Filter, RoomTypeFilter};
+    use matrix_sdk::ruma::OwnedServerName;
+
+    let mut filter = Filter::new();
+    filter.room_types = vec![RoomTypeFilter::Space];
+    if !query.is_empty() {
+        filter.generic_search_term = Some(query);
+    }
+    let mut request = get_public_rooms_filtered::v3::Request::new();
+    request.filter = filter;
+    let lim = limit.unwrap_or(20);
+    request.limit = Some(lim.into());
+    if let Some(srv) = server {
+        request.server = Some(
+            OwnedServerName::try_from(srv.as_str())
+                .map_err(|e| format!("Invalid server name: {}", e))?,
+        );
+    }
+
+    let response = client.public_rooms_filtered(request).await.map_err(|e| {
+        slog(&app, &log, "error", format!("Space search failed: {}", e));
+        format!("Space search failed: {}", e)
+    })?;
+
+    let results: Vec<PublicSpace> = response
+        .chunk
+        .iter()
+        .map(|room| PublicSpace {
+            room_id: room.room_id.to_string(),
+            name: room
+                .name
+                .clone()
+                .unwrap_or_else(|| room.room_id.to_string()),
+            topic: room.topic.clone(),
+            num_joined_members: room.num_joined_members.into(),
+            alias: room.canonical_alias.as_ref().map(|a| a.to_string()),
+        })
+        .collect();
+
+    slog(
+        &app,
+        &log,
+        "info",
+        format!("search_spaces: found {} results", results.len()),
+    );
+    Ok(results)
+}
+
+#[tauri::command]
+pub async fn get_space_hierarchy(
+    space_id: String,
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<Vec<SpaceChild>, String> {
+    let log = state.log.clone();
+    slog(
+        &app,
+        &log,
+        "info",
+        format!("get_space_hierarchy: {}", space_id),
+    );
+
+    let client_lock = state.client.lock().await;
+    let client = client_lock.as_ref().ok_or("Not logged in")?;
+
+    use matrix_sdk::ruma::api::client::space::get_hierarchy;
+    use matrix_sdk::ruma::uint;
+
+    let room_id = matrix_sdk::ruma::OwnedRoomId::try_from(space_id.as_str())
+        .map_err(|e| format!("Invalid room ID: {}", e))?;
+
+    let mut request = get_hierarchy::v1::Request::new(room_id);
+    request.limit = Some(uint!(50));
+    request.max_depth = Some(uint!(1));
+    request.suggested_only = false;
+
+    let response = client.send(request).await.map_err(|e| {
+        slog(
+            &app,
+            &log,
+            "error",
+            format!("Space hierarchy fetch failed: {}", e),
+        );
+        format!("Space hierarchy fetch failed: {}", e)
+    })?;
+
+    // Build set of joined room IDs to check membership
+    let joined_room_ids: std::collections::HashSet<String> = client
+        .joined_rooms()
+        .iter()
+        .map(|r| r.room_id().to_string())
+        .collect();
+
+    // Skip first entry (index 0) which is the space itself
+    let children: Vec<SpaceChild> = response
+        .rooms
+        .iter()
+        .skip(1)
+        .map(|child| {
+            let rid = child.summary.room_id.to_string();
+            SpaceChild {
+                room_id: rid.clone(),
+                name: child
+                    .summary
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| rid.clone()),
+                topic: child.summary.topic.clone(),
+                num_joined_members: child.summary.num_joined_members.into(),
+                room_type: child.summary.room_type.as_ref().map(|t| t.to_string()),
+                is_joined: joined_room_ids.contains(&rid),
+            }
+        })
+        .collect();
+
+    slog(
+        &app,
+        &log,
+        "info",
+        format!("get_space_hierarchy: found {} children", children.len()),
+    );
+    Ok(children)
 }
 
 #[cfg(test)]
