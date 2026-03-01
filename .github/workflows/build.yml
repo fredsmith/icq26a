@@ -44,16 +44,15 @@ jobs:
           BASE="${YEAR}.${MONTH}.${DAY}"
           TAG="v${BASE}"
 
-          # Check if today's tag already exists
+          # Delete existing release for today so it gets rebuilt
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release ${TAG} already exists, skipping"
-            echo "version=" >> "$GITHUB_OUTPUT"
-            echo "tag=" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${BASE}" >> "$GITHUB_OUTPUT"
-            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-            echo "Will create release ${TAG}"
+            echo "Replacing existing release ${TAG}"
+            gh release delete "$TAG" --yes --cleanup-tag
           fi
+
+          echo "version=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Will create release ${TAG}"
 
   build:
     needs: version
