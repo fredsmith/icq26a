@@ -43,12 +43,12 @@ jobs:
           DAY=$(date -u +%-d)
           BASE="${YEAR}.${MONTH}.${DAY}"
 
-          # Find next available -vN suffix for today
+          # Find next available -N suffix for today
           N=1
-          while gh release view "v${BASE}-v${N}" >/dev/null 2>&1; do
+          while gh release view "v${BASE}-${N}" >/dev/null 2>&1; do
             N=$((N + 1))
           done
-          VERSION="${BASE}-v${N}"
+          VERSION="${BASE}-${N}"
 
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
