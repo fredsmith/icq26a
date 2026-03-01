@@ -29,7 +29,7 @@ export async function openChildWindow(opts: ChildWindowOptions) {
   })
 }
 
-function sanitizeLabel(id: string): string {
+export function sanitizeLabel(id: string): string {
   return id.replace(/[^a-zA-Z0-9_-]/g, '_')
 }
 

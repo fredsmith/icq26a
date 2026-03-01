@@ -2324,3 +2324,91 @@ pub async fn set_dock_badge(count: u32) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── mxc_to_http ──────────────────────────────────────────
+
+    #[test]
+    fn mxc_to_http_valid() {
+        let url = mxc_to_http("https://matrix.org", "mxc://matrix.org/abc123");
+        assert_eq!(
+            url.unwrap(),
+            "https://matrix.org/_matrix/media/v3/thumbnail/matrix.org/abc123?width=96&height=96&method=crop"
+        );
+    }
+
+    #[test]
+    fn mxc_to_http_trailing_slash_on_homeserver() {
+        let url = mxc_to_http("https://matrix.org/", "mxc://matrix.org/abc123");
+        assert_eq!(
+            url.unwrap(),
+            "https://matrix.org/_matrix/media/v3/thumbnail/matrix.org/abc123?width=96&height=96&method=crop"
+        );
+    }
+
+    #[test]
+    fn mxc_to_http_missing_prefix() {
+        assert!(mxc_to_http("https://matrix.org", "https://not-mxc/foo").is_none());
+    }
+
+    #[test]
+    fn mxc_to_http_missing_slash() {
+        assert!(mxc_to_http("https://matrix.org", "mxc://noslash").is_none());
+    }
+
+    // ── extract_reply_fallback ───────────────────────────────
+
+    #[test]
+    fn extract_reply_simple() {
+        let body = "> <@alice:matrix.org> hello world\n\nmy reply";
+        let (sender, quoted) = extract_reply_fallback(body).unwrap();
+        assert_eq!(sender, "@alice:matrix.org");
+        assert_eq!(quoted, "hello world");
+    }
+
+    #[test]
+    fn extract_reply_multiline() {
+        let body = "> <@bob:example.com> line one\n> line two\n\nactual reply";
+        let (sender, quoted) = extract_reply_fallback(body).unwrap();
+        assert_eq!(sender, "@bob:example.com");
+        assert_eq!(quoted, "line one\nline two");
+    }
+
+    #[test]
+    fn extract_reply_no_fallback() {
+        assert!(extract_reply_fallback("just a normal message").is_none());
+    }
+
+    #[test]
+    fn extract_reply_empty() {
+        assert!(extract_reply_fallback("").is_none());
+    }
+
+    // ── strip_reply_fallback ─────────────────────────────────
+
+    #[test]
+    fn strip_reply_with_fallback() {
+        let body = "> <@alice:matrix.org> quoted\n\nactual reply";
+        assert_eq!(strip_reply_fallback(body), "actual reply");
+    }
+
+    #[test]
+    fn strip_reply_no_fallback() {
+        assert_eq!(strip_reply_fallback("just text"), "just text");
+    }
+
+    #[test]
+    fn strip_reply_bare_quote_lines() {
+        let body = "> line1\n>\n> line3\n\nreply text";
+        assert_eq!(strip_reply_fallback(body), "reply text");
+    }
+
+    #[test]
+    fn strip_reply_only_fallback() {
+        let body = "> <@user:host> quoted";
+        assert_eq!(strip_reply_fallback(body), "");
+    }
+}

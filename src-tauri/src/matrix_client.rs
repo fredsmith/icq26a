@@ -216,3 +216,40 @@ impl MatrixState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_log_push_and_get() {
+        let log = ServerLog::new();
+        log.push("info", "hello".into());
+        log.push("error", "oops".into());
+        let entries = log.get_all();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].level, "info");
+        assert_eq!(entries[0].message, "hello");
+        assert_eq!(entries[1].level, "error");
+        assert_eq!(entries[1].message, "oops");
+    }
+
+    #[test]
+    fn server_log_caps_at_500() {
+        let log = ServerLog::new();
+        for i in 0..550 {
+            log.push("info", format!("msg {}", i));
+        }
+        let entries = log.get_all();
+        assert_eq!(entries.len(), 500);
+        // Oldest entries should have been drained
+        assert_eq!(entries[0].message, "msg 50");
+        assert_eq!(entries[499].message, "msg 549");
+    }
+
+    #[test]
+    fn server_log_empty() {
+        let log = ServerLog::new();
+        assert!(log.get_all().is_empty());
+    }
+}
