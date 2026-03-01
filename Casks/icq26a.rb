@@ -1,13 +1,13 @@
 cask "icq26a" do
-  version "0.1.2"
+  version "2026.3.1-2"
 
   on_arm do
     url "https://github.com/fredsmith/icq26a/releases/download/v#{version}/ICQ26a_#{version}_aarch64.dmg"
-    sha256 "PLACEHOLDER" # :arm64
+    sha256 "233a84647e3b9e70add57fdd469783e3f527cd3702d8d3b3417c08c3460c6b67" # :arm64
   end
   on_intel do
     url "https://github.com/fredsmith/icq26a/releases/download/v#{version}/ICQ26a_#{version}_x64.dmg"
-    sha256 "PLACEHOLDER" # :x64
+    sha256 "b5134893be7729d3086d96b6935123a3afb9d07deb533d07233e8c047e88b970" # :x64
   end
 
   name "ICQ26a"
