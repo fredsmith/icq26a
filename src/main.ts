@@ -35,6 +35,11 @@ document.addEventListener('keydown', async (e) => {
   ))
 })
 
+// Prevent native browser context menu so custom context menus work
+document.addEventListener('contextmenu', (e) => {
+  e.preventDefault()
+})
+
 // Intercept clicks on <a target="_blank"> to open in system browser
 document.addEventListener('click', (e) => {
   const anchor = (e.target as HTMLElement).closest('a[target="_blank"]') as HTMLAnchorElement | null

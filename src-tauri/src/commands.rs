@@ -1,8 +1,8 @@
 use crate::matrix_client::{
     Buddy, InviteInfo, LogEntry, LoginCredentials, MatrixState, Message, MessageDeletedEvent,
     MessageEditEvent, MessagesPage, PersistedSession, PublicSpace, ReactionEvent, Room,
-    RoomProfile, ServerLog, SharedRoom, Space, SpaceChild, TypingEvent, UserProfile,
-    VerificationEmoji, VerificationEmojisEvent, VerificationEvent,
+    RoomProfile, ServerLog, SharedRoom, Space, SpaceChild, TrayAnimationState, TypingEvent,
+    UserProfile, VerificationEmoji, VerificationEmojisEvent, VerificationEvent,
 };
 use matrix_sdk::{Client, ServerName};
 use tauri::{Emitter, State};
@@ -1107,6 +1107,7 @@ pub async fn get_room_messages(
         .map_err(|e| format!("Invalid room ID: {}", e))?;
 
     let room = client.get_room(&room_id).ok_or("Room not found")?;
+    let mut avatar_cache: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
 
     slog(&app, &log, "info", "Fetching messages from server...".into());
     let mut options = matrix_sdk::room::MessagesOptions::backward();
@@ -1130,9 +1131,28 @@ pub async fn get_room_messages(
 
     let mut messages = Vec::new();
     let mut edits: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut reactions_map: std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>> = std::collections::HashMap::new();
 
     for event in messages_response.chunk {
         if let Ok(timeline_event) = event.raw().deserialize() {
+            // Collect reaction events
+            if let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+                matrix_sdk::ruma::events::AnySyncMessageLikeEvent::Reaction(reaction),
+            ) = &timeline_event
+            {
+                if let Some(original) = reaction.as_original() {
+                    let target = original.content.relates_to.event_id.to_string();
+                    let key = original.content.relates_to.key.clone();
+                    let sender_name = reaction.sender().localpart().to_string();
+                    reactions_map
+                        .entry(target)
+                        .or_default()
+                        .entry(key)
+                        .or_default()
+                        .push(sender_name);
+                }
+            }
+
             if let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
                 matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(msg),
             ) = timeline_event
@@ -1227,6 +1247,22 @@ pub async fn get_room_messages(
                     body = strip_reply_fallback(&body);
                 }
 
+                // Look up sender avatar URL (cached per sender, authenticated fetch)
+                let sender_id_str = msg.sender().to_string();
+                let sender_avatar_url = if let Some(cached) = avatar_cache.get(&sender_id_str) {
+                    cached.clone()
+                } else {
+                    let avatar = match room.get_member_no_sync(msg.sender()).await {
+                        Ok(Some(member)) => match member.avatar_url() {
+                            Some(mxc) => fetch_avatar_data_url(client, &mxc.to_string()).await,
+                            None => None,
+                        },
+                        _ => None,
+                    };
+                    avatar_cache.insert(sender_id_str, avatar.clone());
+                    avatar
+                };
+
                 messages.push(Message {
                     room_id: room_id.to_string(),
                     event_id: msg.event_id().to_string(),
@@ -1240,6 +1276,7 @@ pub async fn get_room_messages(
                     in_reply_to,
                     reply_sender_name,
                     reply_body: reply_body_text,
+                    sender_avatar_url,
                 });
             }
         }
@@ -1254,7 +1291,7 @@ pub async fn get_room_messages(
 
     messages.reverse();
     slog(&app, &log, "info", format!("get_room_messages: returning {} messages ({} edits applied)", messages.len(), edits.len()));
-    Ok(MessagesPage { messages, end_token })
+    Ok(MessagesPage { messages, end_token, reactions: reactions_map })
 }
 
 #[tauri::command]
@@ -1702,6 +1739,15 @@ pub async fn start_sync(
                             body = strip_reply_fallback(&body);
                         }
 
+                        // Look up sender avatar URL (authenticated fetch)
+                        let sender_avatar_url = match room.get_member_no_sync(event.sender()).await {
+                            Ok(Some(member)) => match member.avatar_url() {
+                                Some(mxc) => fetch_avatar_data_url(&room.client(), &mxc.to_string()).await,
+                                None => None,
+                            },
+                            _ => None,
+                        };
+
                         let msg = Message {
                             room_id: room.room_id().to_string(),
                             event_id: event.event_id().to_string(),
@@ -1715,6 +1761,7 @@ pub async fn start_sync(
                             in_reply_to,
                             reply_sender_name,
                             reply_body: reply_body_text,
+                            sender_avatar_url,
                         };
                         let _ = app.emit("new_message", &msg);
                     }
@@ -2772,6 +2819,93 @@ pub async fn get_space_hierarchy(
         format!("get_space_hierarchy: found {} children", children.len()),
     );
     Ok(children)
+}
+
+#[tauri::command]
+pub async fn update_tray_icon(
+    icon_state: String,
+    app: tauri::AppHandle,
+    tray_anim: State<'_, TrayAnimationState>,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+
+    // Stop any existing animation
+    tray_anim.animating.store(false, Ordering::Relaxed);
+
+    let tray = app
+        .tray_by_id("tray_main")
+        .ok_or("Tray icon not found")?;
+
+    // Rebuild tray menu with updated "Go Online/Go Offline" text
+    let is_online = icon_state == "connected" || icon_state == "connecting";
+    let toggle_text = if is_online { "Go Offline" } else { "Go Online" };
+    {
+        use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+        let menu = Menu::with_items(&app, &[
+            &MenuItem::with_id(&app, "buddy_list", "Buddy List", true, None::<&str>).map_err(|e| e.to_string())?,
+            &PredefinedMenuItem::separator(&app).map_err(|e| e.to_string())?,
+            &MenuItem::with_id(&app, "toggle_status", toggle_text, true, None::<&str>).map_err(|e| e.to_string())?,
+            &MenuItem::with_id(&app, "settings", "Settings", true, None::<&str>).map_err(|e| e.to_string())?,
+            &PredefinedMenuItem::separator(&app).map_err(|e| e.to_string())?,
+            &MenuItem::with_id(&app, "quit", "Quit ICQ26a", true, None::<&str>).map_err(|e| e.to_string())?,
+        ]).map_err(|e| e.to_string())?;
+        tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+    }
+
+    match icon_state.as_str() {
+        "connected" => {
+            let icon = crate::flower_icon(false);
+            tray.set_icon(Some(icon)).map_err(|e| e.to_string())?;
+            tray.set_tooltip(Some("ICQ26a - Connected"))
+                .map_err(|e| e.to_string())?;
+        }
+        "connecting" => {
+            // Start blinking animation: alternate red flower on/off
+            let flag = tray_anim.animating.clone();
+            flag.store(true, Ordering::Relaxed);
+            let app_clone = app.clone();
+            tokio::spawn(async move {
+                let mut show = true;
+                while flag.load(Ordering::Relaxed) {
+                    if let Some(tray) = app_clone.tray_by_id("tray_main") {
+                        let icon = if show {
+                            Some(crate::flower_icon(true))
+                        } else {
+                            Some(crate::flower_icon(false))
+                        };
+                        let _ = tray.set_icon(icon);
+                    }
+                    show = !show;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+            });
+            tray.set_tooltip(Some("ICQ26a - Connecting..."))
+                .map_err(|e| e.to_string())?;
+        }
+        "disconnected" => {
+            let icon = crate::flower_icon(true);
+            tray.set_icon(Some(icon)).map_err(|e| e.to_string())?;
+            tray.set_tooltip(Some("ICQ26a - Disconnected"))
+                .map_err(|e| e.to_string())?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn show_emoji_picker() {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSApplication;
+        if let Some(mtm) = MainThreadMarker::new() {
+            let app = NSApplication::sharedApplication(mtm);
+            unsafe {
+                let _: () = objc2::msg_send![&app, orderFrontCharacterPalette: std::ptr::null::<objc2::runtime::AnyObject>()];
+            }
+        }
+    }
 }
 
 #[cfg(test)]

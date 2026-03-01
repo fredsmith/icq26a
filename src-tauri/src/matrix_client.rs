@@ -1,6 +1,7 @@
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -42,6 +43,7 @@ pub struct Message {
     pub in_reply_to: Option<String>,
     pub reply_sender_name: Option<String>,
     pub reply_body: Option<String>,
+    pub sender_avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +90,7 @@ pub struct InviteInfo {
 pub struct MessagesPage {
     pub messages: Vec<Message>,
     pub end_token: Option<String>,
+    pub reactions: std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -239,6 +242,18 @@ impl MatrixState {
         let mut tasks = self.sync_tasks.lock().unwrap();
         for task in tasks.drain(..) {
             task.abort();
+        }
+    }
+}
+
+pub struct TrayAnimationState {
+    pub animating: Arc<AtomicBool>,
+}
+
+impl TrayAnimationState {
+    pub fn new() -> Self {
+        Self {
+            animating: Arc::new(AtomicBool::new(false)),
         }
     }
 }

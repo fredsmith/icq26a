@@ -43,6 +43,7 @@ export interface Message {
   in_reply_to?: string | null
   reply_sender_name?: string | null
   reply_body?: string | null
+  sender_avatar_url?: string | null
 }
 
 export interface TypingEvent {
@@ -83,6 +84,7 @@ export interface InviteInfo {
 export interface MessagesPage {
   messages: Message[]
   end_token: string | null
+  reactions: Record<string, Record<string, string[]>>
 }
 
 export interface SharedRoom {
