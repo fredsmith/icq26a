@@ -36,10 +36,11 @@ ICQ26a — a Matrix chat client styled after ICQ 98a. Tauri v2 desktop app with 
 ## Commands
 
 ```bash
-npm install          # install frontend dependencies
-npm run tauri dev    # development with hot reload
-npm run tauri build  # production build
-cargo check --manifest-path src-tauri/Cargo.toml  # type-check Rust
+task install  # install frontend dependencies
+task dev      # development with hot reload
+task build    # production build
+task check    # type-check Rust
+task test     # run all tests and checks (cargo test + vitest + svelte-check)
 ```
 
 ## Conventions

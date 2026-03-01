@@ -17,6 +17,18 @@ tasks:
     status:
       - test -d node_modules
 
+  check:
+    desc: Type-check Rust backend
+    cmd: cargo check --manifest-path src-tauri/Cargo.toml
+
+  test:
+    desc: Run all checks and tests
+    deps: [install]
+    cmds:
+      - cargo test --manifest-path src-tauri/Cargo.toml
+      - npx vitest run
+      - npx svelte-check --tsconfig ./tsconfig.json
+
   clean:
     desc: Clean all build artifacts, worktrees, and caches
     cmds:
