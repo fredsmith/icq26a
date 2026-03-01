@@ -9,6 +9,7 @@
   import { openUserInfoWindow } from '../lib/windows'
   import { linkify } from '../lib/linkify'
   import TitleBar from './TitleBar.svelte'
+  import EmojiPicker from './EmojiPicker.svelte'
 
   interface Props {
     roomId: string
@@ -46,6 +47,9 @@
 
   // Message context menu
   let msgContextMenu = $state<{ x: number; y: number; msg: Message } | null>(null)
+
+  // Emoji picker
+  let emojiPicker = $state<{ x: number; y: number; eventId: string } | null>(null)
 
   let unlisteners: (() => void)[] = []
   let windowFocused = $state(true)
@@ -154,6 +158,13 @@
       const page = await getRoomMessages(roomId, 50)
       messages = page.messages
       endToken = page.end_token
+      // Load reactions from history
+      for (const [eventId, keys] of Object.entries(page.reactions)) {
+        reactions[eventId] = {}
+        for (const [key, senders] of Object.entries(keys)) {
+          reactions[eventId][key] = new Set(senders)
+        }
+      }
     } catch (e) {
       console.error('Failed to load messages:', e)
     } finally {
@@ -172,6 +183,14 @@
       if (page.messages.length > 0) {
         messages = [...page.messages, ...messages]
         endToken = page.end_token
+        // Merge older reactions
+        for (const [eventId, keys] of Object.entries(page.reactions)) {
+          if (!reactions[eventId]) reactions[eventId] = {}
+          for (const [key, senders] of Object.entries(keys)) {
+            if (!reactions[eventId][key]) reactions[eventId][key] = new Set()
+            for (const s of senders) reactions[eventId][key].add(s)
+          }
+        }
         await tick()
         el.scrollTop = el.scrollHeight - prevHeight
       } else {
@@ -457,13 +476,23 @@
   </div>
   <div class="context-menu" style="left: {msgContextMenu.x}px; top: {msgContextMenu.y}px;">
     <button class="context-item" onclick={handleReply}>Reply</button>
-    <button class="context-item" onclick={() => { const eid = msgContextMenu!.msg.event_id; closeMsgContextMenu(); handleReaction(eid, '\u{1F44D}') }}>React +1</button>
+    <button class="context-item" onclick={() => { const m = msgContextMenu!; closeMsgContextMenu(); emojiPicker = { x: m.x, y: m.y, eventId: m.msg.event_id } }}>React...</button>
     {#if myUserId && msgContextMenu.msg.sender === myUserId}
       <div class="context-separator"></div>
       <button class="context-item" onclick={handleEdit}>Edit</button>
       <button class="context-item danger" onclick={handleDelete}>Delete</button>
     {/if}
   </div>
+{/if}
+
+<!-- Emoji picker -->
+{#if emojiPicker}
+  <EmojiPicker
+    x={emojiPicker.x}
+    y={emojiPicker.y}
+    onpick={(emoji) => { handleReaction(emojiPicker!.eventId, emoji); emojiPicker = null }}
+    onclose={() => { emojiPicker = null }}
+  />
 {/if}
 
 <style>

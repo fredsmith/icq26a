@@ -6,7 +6,7 @@
   import { isLoggedIn, currentUserId, syncing } from './lib/stores'
   import { tryRestoreSession } from './lib/matrix'
   import { initNotifications, playMessageSound } from './lib/notifications'
-  import { openServerLogWindow } from './lib/windows'
+  import { openServerLogWindow, openPreferencesWindow } from './lib/windows'
   import type { Message } from './lib/types'
   import Login from './components/Login.svelte'
   import BuddyList from './components/BuddyList.svelte'
@@ -28,7 +28,18 @@
 
     await listen<string>('sync_status', (event) => {
       syncing.set(event.payload !== 'synced')
+      // Update tray icon based on sync state
+      const trayState = event.payload === 'synced' ? 'connected' : 'connecting'
+      invoke('update_tray_icon', { iconState: trayState }).catch(() => {})
     })
+
+    // Listen for tray menu events
+    await listen('tray_open_settings', () => {
+      openPreferencesWindow()
+    })
+
+    // Start with connecting state in tray
+    invoke('update_tray_icon', { iconState: 'connecting' }).catch(() => {})
 
     try {
       const userId = await tryRestoreSession()
@@ -39,6 +50,7 @@
       await invoke('start_sync')
     } catch {
       // No saved session or restore failed — show login
+      invoke('update_tray_icon', { iconState: 'disconnected' }).catch(() => {})
       await resizeWindow(WINDOW_SIZE)
     } finally {
       restoring = false

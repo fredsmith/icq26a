@@ -10,6 +10,7 @@
   import { openUserInfoWindow, openDirectMessageWindow, openRoomInfoWindow } from '../lib/windows'
   import { linkify } from '../lib/linkify'
   import TitleBar from './TitleBar.svelte'
+  import EmojiPicker from './EmojiPicker.svelte'
 
   interface Props {
     roomId: string
@@ -50,6 +51,9 @@
   let contextMenu = $state<{ x: number; y: number; member: Buddy } | null>(null)
   let msgContextMenu = $state<{ x: number; y: number; msg: Message } | null>(null)
 
+  // Emoji picker
+  let emojiPicker = $state<{ x: number; y: number; eventId: string } | null>(null)
+
   let unlisteners: (() => void)[] = []
   let windowFocused = $state(true)
 
@@ -89,6 +93,13 @@
         messages = page.messages
         endToken = page.end_token
         members = mems
+        // Load reactions from history
+        for (const [eventId, keys] of Object.entries(page.reactions)) {
+          reactions[eventId] = {}
+          for (const [key, senders] of Object.entries(keys)) {
+            reactions[eventId][key] = new Set(senders)
+          }
+        }
       } catch (e) {
         console.error('Failed to load room data:', e)
       } finally {
@@ -191,6 +202,14 @@
       if (page.messages.length > 0) {
         messages = [...page.messages, ...messages]
         endToken = page.end_token
+        // Merge older reactions
+        for (const [eventId, keys] of Object.entries(page.reactions)) {
+          if (!reactions[eventId]) reactions[eventId] = {}
+          for (const [key, senders] of Object.entries(keys)) {
+            if (!reactions[eventId][key]) reactions[eventId][key] = new Set()
+            for (const s of senders) reactions[eventId][key].add(s)
+          }
+        }
         await tick()
         el.scrollTop = el.scrollHeight - prevHeight
       } else {
@@ -428,18 +447,34 @@
           {#if loading}
             <p class="loading-text">Loading...</p>
           {:else}
-            {#each messages as msg}
-              <div class="chat-message" role="article" oncontextmenu={(e: MouseEvent) => handleMsgContext(e, msg)}>
+            {#each messages as msg, i}
+              {@const isFirstInGroup = i === 0 || messages[i - 1].sender !== msg.sender}
+              <div class="chat-message" class:continuation={!isFirstInGroup} role="article" oncontextmenu={(e: MouseEvent) => handleMsgContext(e, msg)}>
                 {#if msg.in_reply_to && (msg.reply_sender_name || msg.reply_body)}
                   <div class="reply-quote">
                     {#if msg.reply_sender_name}<span class="reply-quote-sender">{msg.reply_sender_name}</span>{/if}
                     {#if msg.reply_body}<span class="reply-quote-body">{msg.reply_body.length > 80 ? msg.reply_body.slice(0, 80) + '...' : msg.reply_body}</span>{/if}
                   </div>
                 {/if}
-                <div class="chat-message-header">
-                  <span class="chat-sender">{msg.sender_name}</span>
-                  <span class="chat-time">{formatTime(msg.timestamp)}</span>
-                </div>
+                {#if isFirstInGroup}
+                  <div class="chat-message-header">
+                    <div class="chat-sender-info">
+                      {#if msg.sender_avatar_url}
+                        <img class="chat-avatar" src={msg.sender_avatar_url} alt="" />
+                      {:else}
+                        <span class="chat-avatar-placeholder">
+                          {msg.sender_name.charAt(0).toUpperCase()}
+                        </span>
+                      {/if}
+                      <span class="chat-sender">{msg.sender_name}</span>
+                    </div>
+                    <span class="chat-time">{formatTime(msg.timestamp)}</span>
+                  </div>
+                {:else}
+                  <div class="chat-continuation-header">
+                    <span class="chat-time-inline">{formatTime(msg.timestamp)}</span>
+                  </div>
+                {/if}
                 {#if msg.msg_type === 'image' && msg.media_url}
                   <div class="chat-message-body"><img class="message-image" use:loadMedia={msg.media_url} alt={msg.filename || msg.body} /></div>
                 {:else if (msg.msg_type === 'file' || msg.msg_type === 'audio' || msg.msg_type === 'video') && msg.media_url}
@@ -538,13 +573,23 @@
     </div>
     <div class="context-menu" style="left: {msgContextMenu.x}px; top: {msgContextMenu.y}px;">
       <button class="context-item" onclick={handleMsgReply}>Reply</button>
-      <button class="context-item" onclick={() => { const eid = msgContextMenu!.msg.event_id; closeMsgContextMenu(); handleReaction(eid, '\u{1F44D}') }}>React +1</button>
+      <button class="context-item" onclick={() => { const m = msgContextMenu!; closeMsgContextMenu(); emojiPicker = { x: m.x, y: m.y, eventId: m.msg.event_id } }}>React...</button>
       {#if myUserId && msgContextMenu.msg.sender === myUserId}
         <div class="context-separator"></div>
         <button class="context-item" onclick={handleMsgEdit}>Edit</button>
         <button class="context-item danger" onclick={handleMsgDelete}>Delete</button>
       {/if}
     </div>
+  {/if}
+
+  <!-- Emoji picker -->
+  {#if emojiPicker}
+    <EmojiPicker
+      x={emojiPicker.x}
+      y={emojiPicker.y}
+      onpick={(emoji) => { handleReaction(emojiPicker!.eventId, emoji); emojiPicker = null }}
+      onclose={() => { emojiPicker = null }}
+    />
   {/if}
 </div>
 
@@ -603,10 +648,40 @@
   }
   .chat-message {
     margin-bottom: 4px;
+    margin-top: 6px;
+  }
+  .chat-message.continuation {
+    margin-top: 0;
+    margin-bottom: 2px;
   }
   .chat-message-header {
     display: flex;
     justify-content: space-between;
+    align-items: center;
+  }
+  .chat-sender-info {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .chat-avatar {
+    width: 18px;
+    height: 18px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+  .chat-avatar-placeholder {
+    width: 18px;
+    height: 18px;
+    border-radius: 2px;
+    background: #333;
+    color: #00cccc;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: bold;
+    flex-shrink: 0;
   }
   .chat-sender {
     font-weight: bold;
@@ -616,8 +691,15 @@
     color: #888;
     font-size: 10px;
   }
+  .chat-continuation-header {
+    padding-left: 22px;
+  }
+  .chat-time-inline {
+    color: #555;
+    font-size: 9px;
+  }
   .chat-message-body {
-    padding-left: 8px;
+    padding-left: 22px;
   }
   .reply-quote {
     border-left: 3px solid #666;

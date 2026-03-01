@@ -4,6 +4,7 @@
   import { buddyList, rooms, spaces, unreadCounts, isLoggedIn, currentUserId, currentStatus, syncing, spaceCollapseState, roomTags } from '../lib/stores'
   import { getBuddyList, getRooms, getSpaces, matrixLogout, matrixDisconnect, tryRestoreSession, leaveRoom, removeBuddy, getPendingInvites, acceptInvite, rejectInvite, setDockBadge, getRoomTags, setRoomTag, removeRoomTag } from '../lib/matrix'
   import { invoke } from '@tauri-apps/api/core'
+  import { getCurrentWindow } from '@tauri-apps/api/window'
   import type { Buddy, Room, Message, InviteInfo } from '../lib/types'
   import StatusPicker from './StatusPicker.svelte'
   import TitleBar from './TitleBar.svelte'
@@ -118,6 +119,15 @@
         })
       }
     })
+
+    // Tray menu: toggle online/offline
+    await listen('tray_toggle_status', () => {
+      if ($currentStatus === 'offline') {
+        handleReconnect()
+      } else {
+        handleDisconnect()
+      }
+    })
   })
 
   function openBuddyChat(buddy: Buddy) {
@@ -151,16 +161,19 @@
       console.error('Disconnect failed:', e)
     }
     currentStatus.set('offline')
+    invoke('update_tray_icon', { iconState: 'disconnected' }).catch(() => {})
   }
 
   async function handleReconnect() {
     currentStatus.set('online')
     syncing.set(true)
+    invoke('update_tray_icon', { iconState: 'connecting' }).catch(() => {})
     try {
       await tryRestoreSession()
       await invoke('start_sync')
     } catch (e) {
       syncing.set(false)
+      invoke('update_tray_icon', { iconState: 'disconnected' }).catch(() => {})
       console.error('Reconnect failed:', e)
     }
   }
@@ -301,11 +314,12 @@
     spaces.set([])
     roomTags.set({})
     unreadCounts.set({})
+    invoke('update_tray_icon', { iconState: 'disconnected' }).catch(() => {})
   }
 </script>
 
 <div class="window buddy-list-window">
-  <TitleBar title="ICQ26a" showMinimize />
+  <TitleBar title="ICQ26a" showMinimize onclose={() => getCurrentWindow().hide()} />
   <div class="window-body">
     <div class="buddy-actions">
       <button onclick={openFindUserWindow}>Find Users</button>
