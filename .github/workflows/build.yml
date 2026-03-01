@@ -142,3 +142,34 @@ jobs:
             | Windows | `.msi` / `.exe` |
           releaseDraft: false
           prerelease: false
+
+  update-cask:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release DMGs and compute checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          TAG="${{ needs.version.outputs.tag }}"
+          BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+
+          curl -fL -o arm64.dmg "${BASE}/ICQ26a_${VERSION}_aarch64.dmg"
+          curl -fL -o x64.dmg   "${BASE}/ICQ26a_${VERSION}_x64.dmg"
+
+          ARM64_SHA=$(sha256sum arm64.dmg | awk '{print $1}')
+          X64_SHA=$(sha256sum   x64.dmg   | awk '{print $1}')
+
+          sed -i "s/version \"[^\"]*\"/version \"${VERSION}\"/"                       Casks/icq26a.rb
+          sed -i "s/sha256 \"[^\"]*\" # :arm64/sha256 \"${ARM64_SHA}\" # :arm64/"     Casks/icq26a.rb
+          sed -i "s/sha256 \"[^\"]*\" # :x64/sha256 \"${X64_SHA}\" # :x64/"           Casks/icq26a.rb
+
+      - name: Commit updated cask
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/icq26a.rb
+          git diff --cached --quiet || (git commit -m "cask: bump to ${{ needs.version.outputs.tag }}" && git push)
