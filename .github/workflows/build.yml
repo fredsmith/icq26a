@@ -31,7 +31,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.calver.outputs.version }}
-      cargo_version: ${{ steps.calver.outputs.cargo_version }}
       tag: ${{ steps.calver.outputs.tag }}
     steps:
       - id: calver
@@ -39,26 +38,21 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
-          BASE="$(date -u +%Y.%m.%d)"
+          YEAR=$(date -u +%Y)
+          MONTH=$(date -u +%-m)
+          DAY=$(date -u +%-d)
+          BASE="${YEAR}.${MONTH}.${DAY}"
 
-          # Find next available version for today
-          if ! gh release view "v${BASE}" >/dev/null 2>&1; then
-            VERSION="${BASE}"
-          else
-            N=2
-            while gh release view "v${BASE}-$(printf '%02d' $N)" >/dev/null 2>&1; do
-              N=$((N + 1))
-            done
-            VERSION="${BASE}-$(printf '%02d' $N)"
-          fi
-
-          # Cargo.toml requires strict semver (no leading zeros)
-          CARGO_VERSION=$(echo "$VERSION" | sed -E 's/\.0([0-9])/.\1/g; s/-0([0-9])$/-\1/')
+          # Find next available -vN suffix for today
+          N=1
+          while gh release view "v${BASE}-v${N}" >/dev/null 2>&1; do
+            N=$((N + 1))
+          done
+          VERSION="${BASE}-v${N}"
 
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "cargo_version=${CARGO_VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Will create release v${VERSION} (cargo: ${CARGO_VERSION})"
+          echo "Will create release v${VERSION}"
 
   build:
     needs: version
@@ -90,9 +84,8 @@ jobs:
         shell: bash
         run: |
           VERSION="${{ needs.version.outputs.version }}"
-          CARGO_VERSION="${{ needs.version.outputs.cargo_version }}"
           sed -i.bak 's/"version": "0.0.0"/"version": "'"${VERSION}"'"/' package.json
-          sed -i.bak 's/^version = "0.0.0"/version = "'"${CARGO_VERSION}"'"/' src-tauri/Cargo.toml
+          sed -i.bak 's/^version = "0.0.0"/version = "'"${VERSION}"'"/' src-tauri/Cargo.toml
           sed -i.bak 's/"version": "0.0.0"/"version": "'"${VERSION}"'"/' src-tauri/tauri.conf.json
           find . -name '*.bak' -delete
 
