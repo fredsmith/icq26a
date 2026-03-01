@@ -116,3 +116,25 @@ export function openJoinRoomWindow() {
     parent: 'main',
   })
 }
+
+export function openBrowseSpacesWindow() {
+  openChildWindow({
+    label: 'browsespaces',
+    url: '/?window=browsespaces',
+    title: 'Browse Spaces',
+    width: 400,
+    height: 500,
+    parent: 'main',
+  })
+}
+
+export function openBrowseSpaceWindow(spaceId: string, spaceName: string) {
+  openChildWindow({
+    label: `browsespaces-${sanitizeLabel(spaceId)}`,
+    url: `/?window=browsespaces&spaceId=${encodeURIComponent(spaceId)}&spaceName=${encodeURIComponent(spaceName)}`,
+    title: `Browse: ${spaceName}`,
+    width: 400,
+    height: 500,
+    parent: 'main',
+  })
+}

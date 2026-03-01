@@ -22,6 +22,13 @@ pub struct Room {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Space {
+    pub room_id: String,
+    pub name: String,
+    pub child_room_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub room_id: String,
     pub event_id: String,
@@ -183,6 +190,25 @@ pub struct RoomProfile {
     pub topic: Option<String>,
     pub is_direct: bool,
     pub member_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicSpace {
+    pub room_id: String,
+    pub name: String,
+    pub topic: Option<String>,
+    pub num_joined_members: u64,
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpaceChild {
+    pub room_id: String,
+    pub name: String,
+    pub topic: Option<String>,
+    pub num_joined_members: u64,
+    pub room_type: Option<String>,
+    pub is_joined: bool,
 }
 
 pub fn data_dir() -> Result<PathBuf, String> {

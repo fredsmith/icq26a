@@ -1,13 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { listen } from '@tauri-apps/api/event'
-  import { buddyList, rooms, unreadCounts, isLoggedIn, currentUserId, currentStatus, syncing } from '../lib/stores'
-  import { getBuddyList, getRooms, matrixLogout, matrixDisconnect, tryRestoreSession, leaveRoom, removeBuddy, getPendingInvites, acceptInvite, rejectInvite, setDockBadge } from '../lib/matrix'
+  import { buddyList, rooms, spaces, unreadCounts, isLoggedIn, currentUserId, currentStatus, syncing, spaceCollapseState, roomTags } from '../lib/stores'
+  import { getBuddyList, getRooms, getSpaces, matrixLogout, matrixDisconnect, tryRestoreSession, leaveRoom, removeBuddy, getPendingInvites, acceptInvite, rejectInvite, setDockBadge, getRoomTags, setRoomTag, removeRoomTag } from '../lib/matrix'
   import { invoke } from '@tauri-apps/api/core'
-  import type { Buddy, Message, InviteInfo } from '../lib/types'
+  import type { Buddy, Room, Message, InviteInfo } from '../lib/types'
   import StatusPicker from './StatusPicker.svelte'
   import TitleBar from './TitleBar.svelte'
-  import { openPreferencesWindow, openDirectMessageWindow, openChatRoomWindow, openServerLogWindow, openUserInfoWindow, openRoomInfoWindow, openFindUserWindow, openJoinRoomWindow } from '../lib/windows'
+  import { openPreferencesWindow, openDirectMessageWindow, openChatRoomWindow, openServerLogWindow, openUserInfoWindow, openRoomInfoWindow, openFindUserWindow, openJoinRoomWindow, openBrowseSpacesWindow, openBrowseSpaceWindow } from '../lib/windows'
 
   let pendingInvites = $state<InviteInfo[]>([])
 
@@ -15,7 +15,28 @@
   const presenceAvailable = $derived($buddyList.some(b => b.presence !== 'unknown'))
   const onlineBuddies = $derived($buddyList.filter(b => b.presence !== 'offline' && b.presence !== 'unknown'))
   const offlineBuddies = $derived($buddyList.filter(b => b.presence === 'offline'))
-  const groupRooms = $derived($rooms.filter(r => !r.is_direct))
+  const spacedRoomIds = $derived(new Set($spaces.flatMap(s => s.child_room_ids)))
+  const tagGroups = $derived([...new Set(Object.values($roomTags).flat())].sort())
+  const taggedRoomIds = $derived(new Set(Object.keys($roomTags).filter(id => $roomTags[id].length > 0)))
+  const ungroupedRooms = $derived($rooms.filter(r => !r.is_direct && !spacedRoomIds.has(r.room_id) && !taggedRoomIds.has(r.room_id)))
+
+  function getSpaceRooms(childIds: string[]): Room[] {
+    return childIds
+      .map(id => $rooms.find(r => r.room_id === id))
+      .filter((r): r is Room => r !== undefined)
+  }
+
+  function getTagRooms(tag: string): Room[] {
+    return Object.entries($roomTags)
+      .filter(([_, tags]) => tags.includes(tag))
+      .map(([roomId]) => $rooms.find(r => r.room_id === roomId))
+      .filter((r): r is Room => r !== undefined)
+  }
+
+  function getRoomTag(roomId: string): string | null {
+    const tags = $roomTags[roomId]
+    return tags && tags.length > 0 ? tags[0] : null
+  }
 
   // Update dock badge when unread counts change
   const totalUnread = $derived(Object.values($unreadCounts).reduce((a, b) => a + b, 0))
@@ -33,6 +54,10 @@
       buddyList.set(fetchedBuddies)
       const fetchedRooms = await getRooms()
       rooms.set(fetchedRooms)
+      const fetchedSpaces = await getSpaces()
+      spaces.set(fetchedSpaces)
+      const fetchedTags = await getRoomTags().catch(() => ({}))
+      roomTags.set(fetchedTags)
       const invites = await getPendingInvites().catch(() => [])
       pendingInvites = invites
     } catch (e) {
@@ -201,6 +226,43 @@
     }
   }
 
+  let groupPrompt = $state<{ room: { room_id: string; name: string }; value: string } | null>(null)
+
+  function handleContextSetGroup() {
+    if (!contextMenu?.room) return
+    const room = contextMenu.room
+    contextMenu = null
+    groupPrompt = { room, value: '' }
+  }
+
+  async function submitGroupPrompt() {
+    if (!groupPrompt || !groupPrompt.value.trim()) return
+    const { room, value } = groupPrompt
+    groupPrompt = null
+    try {
+      await setRoomTag(room.room_id, value.trim())
+      const tags = await getRoomTags()
+      roomTags.set(tags)
+    } catch (e) {
+      console.error('Set group failed:', e)
+    }
+  }
+
+  async function handleContextRemoveGroup() {
+    if (!contextMenu?.room) return
+    const room = contextMenu.room
+    const tag = getRoomTag(room.room_id)
+    contextMenu = null
+    if (!tag) return
+    try {
+      await removeRoomTag(room.room_id, tag)
+      const tags = await getRoomTags()
+      roomTags.set(tags)
+    } catch (e) {
+      console.error('Remove group failed:', e)
+    }
+  }
+
   async function handleAcceptInvite(invite: InviteInfo) {
     try {
       const room = await acceptInvite(invite.room_id)
@@ -236,6 +298,8 @@
     currentStatus.set('online')
     buddyList.set([])
     rooms.set([])
+    spaces.set([])
+    roomTags.set({})
     unreadCounts.set({})
   }
 </script>
@@ -246,6 +310,7 @@
     <div class="buddy-actions">
       <button onclick={openFindUserWindow}>Find Users</button>
       <button onclick={openJoinRoomWindow}>Join Room</button>
+      <button onclick={openBrowseSpacesWindow}>Spaces</button>
     </div>
     <div class="buddy-scroll" class:disconnected={isOffline}>
       {#if presenceAvailable}
@@ -299,18 +364,76 @@
           </div>
         {/each}
       {/if}
-      {#if groupRooms.length > 0}
+      {#if $spaces.length > 0 || tagGroups.length > 0 || ungroupedRooms.length > 0}
         <div class="group-header">Rooms</div>
-        {#each groupRooms as room}
-          <button class="buddy-row" onclick={() => openRoomChat(room)} oncontextmenu={(e: MouseEvent) => handleRoomContext(e, room)}>
-            {room.name}
-            {#if $unreadCounts[room.room_id] > 0}
-              <span class="unread-badge">{$unreadCounts[room.room_id]}</span>
-            {/if}
-          </button>
-        {/each}
+        <ul class="tree-view rooms-tree">
+          {#each $spaces as space}
+            <li>
+              <details open={!$spaceCollapseState[space.room_id]} ontoggle={(e: Event) => {
+                const details = e.target as HTMLDetailsElement;
+                const isNowOpen = details.open;
+                if (isNowOpen === !!$spaceCollapseState[space.room_id]) {
+                  spaceCollapseState.toggle(space.room_id);
+                }
+              }}>
+                <summary>
+                  <span class="space-name">{space.name}</span>
+                  <!-- svelte-ignore a11y_click_events_have_key_events -->
+                  <button class="space-browse-btn" title="Browse space rooms" onclick={(e: MouseEvent) => { e.stopPropagation(); openBrowseSpaceWindow(space.room_id, space.name) }}>+</button>
+                </summary>
+                <ul>
+                  {#each getSpaceRooms(space.child_room_ids) as room}
+                    <li>
+                      <button class="tree-room-btn" onclick={() => openRoomChat(room)} oncontextmenu={(e: MouseEvent) => handleRoomContext(e, room)}>
+                        {room.name}
+                        {#if $unreadCounts[room.room_id] > 0}
+                          <span class="unread-badge">{$unreadCounts[room.room_id]}</span>
+                        {/if}
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              </details>
+            </li>
+          {/each}
+          {#each tagGroups as tag}
+            <li class="tag-group">
+              <details open={!$spaceCollapseState[`tag:${tag}`]} ontoggle={(e: Event) => {
+                const details = e.target as HTMLDetailsElement;
+                const isNowOpen = details.open;
+                if (isNowOpen === !!$spaceCollapseState[`tag:${tag}`]) {
+                  spaceCollapseState.toggle(`tag:${tag}`);
+                }
+              }}>
+                <summary>{tag}</summary>
+                <ul>
+                  {#each getTagRooms(tag) as room}
+                    <li>
+                      <button class="tree-room-btn" onclick={() => openRoomChat(room)} oncontextmenu={(e: MouseEvent) => handleRoomContext(e, room)}>
+                        {room.name}
+                        {#if $unreadCounts[room.room_id] > 0}
+                          <span class="unread-badge">{$unreadCounts[room.room_id]}</span>
+                        {/if}
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              </details>
+            </li>
+          {/each}
+          {#each ungroupedRooms as room}
+            <li>
+              <button class="tree-room-btn" onclick={() => openRoomChat(room)} oncontextmenu={(e: MouseEvent) => handleRoomContext(e, room)}>
+                {room.name}
+                {#if $unreadCounts[room.room_id] > 0}
+                  <span class="unread-badge">{$unreadCounts[room.room_id]}</span>
+                {/if}
+              </button>
+            </li>
+          {/each}
+        </ul>
       {/if}
-      {#if $buddyList.length === 0 && groupRooms.length === 0}
+      {#if $buddyList.length === 0 && ungroupedRooms.length === 0 && $spaces.length === 0 && tagGroups.length === 0}
         <p class="empty-text">No contacts or rooms</p>
       {/if}
     </div>
@@ -329,8 +452,37 @@
       {:else if contextMenu.room}
         <button class="context-item" onclick={handleContextRoomInfo}>Room Info</button>
         <div class="context-separator"></div>
+        {#if getRoomTag(contextMenu.room.room_id)}
+          <button class="context-item" onclick={handleContextRemoveGroup}>Remove from Group</button>
+        {:else if !spacedRoomIds.has(contextMenu.room.room_id)}
+          <button class="context-item" onclick={handleContextSetGroup}>Set Group...</button>
+        {/if}
         <button class="context-item danger" onclick={handleContextLeaveRoom}>Leave Room</button>
       {/if}
+    </div>
+  {/if}
+
+  <!-- Group name prompt -->
+  {#if groupPrompt}
+    <div class="prompt-overlay" onclick={() => groupPrompt = null} role="presentation"></div>
+    <div class="prompt-dialog window">
+      <div class="title-bar">
+        <div class="title-bar-text">Set Group</div>
+      </div>
+      <div class="window-body">
+        <p style="margin: 0 0 4px; font-size: 11px;">Group name for "{groupPrompt.room.name}":</p>
+        <input
+          type="text"
+          bind:value={groupPrompt.value}
+          onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') submitGroupPrompt(); if (e.key === 'Escape') groupPrompt = null; }}
+          style="width: 100%; box-sizing: border-box;"
+          autofocus
+        />
+        <div style="display: flex; justify-content: flex-end; gap: 4px; margin-top: 8px;">
+          <button onclick={submitGroupPrompt}>OK</button>
+          <button onclick={() => groupPrompt = null}>Cancel</button>
+        </div>
+      </div>
     </div>
   {/if}
 
@@ -428,6 +580,54 @@
     color: #888;
     padding: 20px;
     font-size: 11px;
+  }
+  .rooms-tree {
+    margin: 0 4px;
+    padding: 4px;
+    border: none;
+    box-shadow: none;
+    background: transparent;
+  }
+  /* Override 98.css's white cover-up block to match our gray background */
+  .rooms-tree :global(ul > li:last-child::after) {
+    background: #c0c0c0;
+  }
+  .rooms-tree :global(summary) {
+    font-size: 11px;
+    font-weight: bold;
+    cursor: default;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .space-browse-btn {
+    font-size: 10px;
+    padding: 0 3px;
+    min-width: 0;
+    min-height: 0;
+    line-height: 1;
+    margin-left: auto;
+  }
+  .tag-group :global(> details > summary) {
+    font-style: italic;
+  }
+  .tree-room-btn {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    border: none;
+    box-shadow: none;
+    background: transparent;
+    padding: 1px 4px;
+    text-align: left;
+    cursor: pointer;
+    font-size: 11px;
+    color: #000;
+  }
+  .tree-room-btn:hover {
+    background: #000080;
+    color: white;
   }
   .unread-badge {
     margin-left: auto;
@@ -542,5 +742,25 @@
     background: #cc0000;
     color: white;
     border: 1px solid #990000;
+  }
+  .prompt-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 199;
+    background: rgba(0, 0, 0, 0.2);
+  }
+  .prompt-dialog {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 200;
+    width: 220px;
+  }
+  .prompt-dialog .window-body {
+    padding: 8px;
   }
 </style>

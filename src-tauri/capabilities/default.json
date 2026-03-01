@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main", "preferences", "serverlog", "dm-*", "chatroom-*", "userinfo-*", "roominfo-*", "finduser", "joinroom"],
+  "windows": ["main", "preferences", "serverlog", "dm-*", "chatroom-*", "userinfo-*", "roominfo-*", "finduser", "joinroom", "browsespaces", "browsespaces-*"],
   "permissions": [
     "core:default",
     "shell:allow-open",

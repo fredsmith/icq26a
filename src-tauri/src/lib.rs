@@ -44,6 +44,7 @@ pub fn run() {
             commands::get_buddy_list,
             commands::get_room_members,
             commands::get_rooms,
+            commands::get_spaces,
             commands::get_room_messages,
             commands::send_message,
             commands::set_presence,
@@ -70,7 +71,12 @@ pub fn run() {
             commands::get_pending_invites,
             commands::accept_invite,
             commands::reject_invite,
+            commands::get_room_tags,
+            commands::set_room_tag,
+            commands::remove_room_tag,
             commands::set_dock_badge,
+            commands::search_spaces,
+            commands::get_space_hierarchy,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
