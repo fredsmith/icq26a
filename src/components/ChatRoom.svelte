@@ -429,7 +429,7 @@
             <p class="loading-text">Loading...</p>
           {:else}
             {#each messages as msg}
-              <div class="chat-message" oncontextmenu={(e: MouseEvent) => handleMsgContext(e, msg)}>
+              <div class="chat-message" role="article" oncontextmenu={(e: MouseEvent) => handleMsgContext(e, msg)}>
                 {#if msg.in_reply_to && (msg.reply_sender_name || msg.reply_body)}
                   <div class="reply-quote">
                     {#if msg.reply_sender_name}<span class="reply-quote-sender">{msg.reply_sender_name}</span>{/if}
@@ -443,7 +443,7 @@
                 {#if msg.msg_type === 'image' && msg.media_url}
                   <div class="chat-message-body"><img class="message-image" use:loadMedia={msg.media_url} alt={msg.filename || msg.body} /></div>
                 {:else if (msg.msg_type === 'file' || msg.msg_type === 'audio' || msg.msg_type === 'video') && msg.media_url}
-                  <div class="chat-message-body"><a class="message-file" use:downloadFile={{ mxcUrl: msg.media_url, filename: msg.filename || msg.body }}>{msg.filename || msg.body}</a></div>
+                  <div class="chat-message-body"><a href="#download" class="message-file" role="button" use:downloadFile={{ mxcUrl: msg.media_url, filename: msg.filename || msg.body }}>{msg.filename || msg.body}</a></div>
                 {:else}
                   <div class="chat-message-body">{@html linkify(msg.body)}</div>
                 {/if}
