@@ -356,7 +356,7 @@
     <!-- Header fields -->
     <div class="dm-header">
       <div class="field-row">
-        <label>To:</label>
+        <span><strong>To:</strong></span>
         <span>{roomName}</span>
         {#if dmUserId}
           <button class="info-btn" onclick={() => openUserInfoWindow(dmUserId!, roomName)}>Info</button>
@@ -376,7 +376,7 @@
           <p class="empty-text">No messages yet</p>
         {:else}
           {#each messages as msg}
-            <div class="message" oncontextmenu={(e: MouseEvent) => handleMsgContext(e, msg)}>
+            <div class="message" role="article" oncontextmenu={(e: MouseEvent) => handleMsgContext(e, msg)}>
               {#if msg.in_reply_to && (msg.reply_sender_name || msg.reply_body)}
                 <div class="reply-quote">
                   {#if msg.reply_sender_name}<span class="reply-quote-sender">{msg.reply_sender_name}</span>{/if}
@@ -387,7 +387,7 @@
               {#if msg.msg_type === 'image' && msg.media_url}
                 <span class="message-body"><img class="message-image" use:loadMedia={msg.media_url} alt={msg.filename || msg.body} /></span>
               {:else if (msg.msg_type === 'file' || msg.msg_type === 'audio' || msg.msg_type === 'video') && msg.media_url}
-                <span class="message-body"><a class="message-file" use:downloadFile={{ mxcUrl: msg.media_url, filename: msg.filename || msg.body }}>{msg.filename || msg.body}</a></span>
+                <span class="message-body"><a href="#download" class="message-file" role="button" use:downloadFile={{ mxcUrl: msg.media_url, filename: msg.filename || msg.body }}>{msg.filename || msg.body}</a></span>
               {:else}
                 <span class="message-body">{@html linkify(msg.body)}</span>
               {/if}
@@ -486,8 +486,7 @@
     display: flex;
     align-items: center;
   }
-  .dm-header .field-row label {
-    font-weight: bold;
+  .dm-header .field-row span {
     min-width: 30px;
   }
   .info-btn {

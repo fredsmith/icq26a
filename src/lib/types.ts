@@ -14,6 +14,7 @@ export type PresenceStatus =
   | 'free_for_chat'
   | 'invisible'
   | 'offline'
+  | 'unknown'
 
 export interface Room {
   room_id: string
