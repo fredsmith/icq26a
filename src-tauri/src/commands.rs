@@ -138,6 +138,65 @@ async fn fetch_avatar_data_url(client: &Client, mxc_url: &str) -> Option<String>
     None
 }
 
+/// Fetch the explicit room name from the server via the Matrix state API.
+/// Returns None if the room has no m.room.name event or on any error.
+async fn fetch_room_name_from_server(client: &Client, room_id: &str) -> Option<String> {
+    let hs = client.homeserver().to_string();
+    let hs = hs.trim_end_matches('/');
+    let access_token = client.access_token()?;
+
+    let url = format!(
+        "{}/_matrix/client/v3/rooms/{}/state/m.room.name",
+        hs, room_id
+    );
+
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", access_token))
+        .send()
+        .await
+        .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let name = json.get("name")?.as_str()?;
+    if name.is_empty() {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// Get the best available name for a room, with server API fallback.
+/// For non-DM rooms, falls back to querying the server if the local SDK store
+/// doesn't have the m.room.name state event cached.
+async fn resolve_room_name(client: &Client, room: &matrix_sdk::Room, is_direct: bool) -> String {
+    // 1. Check explicit m.room.name from local state
+    if let Some(name) = room.name().filter(|n| !n.is_empty()) {
+        return name;
+    }
+
+    // 2. Check canonical alias
+    if let Some(alias) = room.canonical_alias() {
+        return alias.to_string();
+    }
+
+    // 3. For non-DM rooms, try fetching name from server
+    if !is_direct {
+        if let Some(name) = fetch_room_name_from_server(client, room.room_id().as_str()).await {
+            return name;
+        }
+    }
+
+    // 4. Fall back to SDK computed display name
+    room.display_name()
+        .await
+        .map(|n| n.to_string())
+        .unwrap_or_else(|_| "Unknown".to_string())
+}
+
 /// Wraps a future with periodic heartbeat log messages if it takes longer than 5s.
 async fn with_heartbeat<F, T>(
     app: &tauri::AppHandle,
@@ -699,11 +758,8 @@ pub async fn get_user_profile(
             .unwrap_or_default();
         let has_user = members.iter().any(|m| m.user_id() == parsed_user_id);
         if has_user {
-            let name = room
-                .display_name()
-                .await
-                .map(|n| n.to_string())
-                .unwrap_or_else(|_| "Unknown".to_string());
+            let is_direct = room.is_direct().await.unwrap_or(false);
+            let name = resolve_room_name(client, &room, is_direct).await;
             shared_rooms.push(SharedRoom {
                 room_id: room.room_id().to_string(),
                 name,
@@ -749,15 +805,10 @@ pub async fn get_room_info(
         .map_err(|e| format!("Invalid room ID: {}", e))?;
     let room = client.get_room(&room_id_parsed).ok_or("Room not found")?;
 
-    let name = room
-        .display_name()
-        .await
-        .map(|n| n.to_string())
-        .unwrap_or_else(|_| "Unknown".to_string());
+    let is_direct = room.is_direct().await.unwrap_or(false);
+    let name = resolve_room_name(client, &room, is_direct).await;
 
     let topic = room.topic();
-
-    let is_direct = room.is_direct().await.unwrap_or(false);
 
     let members = room
         .members(matrix_sdk::RoomMemberships::ACTIVE)
@@ -949,14 +1000,11 @@ pub async fn get_rooms(
 
     let mut rooms = Vec::new();
     for room in client.joined_rooms() {
+        let is_direct = room.is_direct().await.unwrap_or(false);
         rooms.push(Room {
             room_id: room.room_id().to_string(),
-            name: room
-                .display_name()
-                .await
-                .map(|n| n.to_string())
-                .unwrap_or_else(|_| "Unknown".to_string()),
-            is_direct: room.is_direct().await.unwrap_or(false),
+            name: resolve_room_name(client, &room, is_direct).await,
+            is_direct,
             last_message: None,
             unread_count: 0,
         });
