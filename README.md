@@ -32,14 +32,18 @@ Check the [latest release](https://github.com/fredsmith/icq26a/releases) for you
 
 ```bash
 brew tap fredsmith/icq26a https://github.com/fredsmith/icq26a
-brew install --cask --no-quarantine icq26a
+brew install --cask icq26a
 ```
 
-The `--no-quarantine` flag is needed because the app is unsigned.
+### macOS Gatekeeper (unsigned app)
 
-### MacOS special instructions (manual install)
+ICQ26a is not signed with an Apple Developer certificate (Apple charges
+$100/year). On first launch, macOS will block it. To allow it:
 
-After you download the client, you will need to allowlist it in MacOS's privacy & Security
-screen to run it.  You can also run `xattr -d com.apple.quarantine /Applications/ICQ26a.app`
-in the terminal to allow-list it.  This is required because I am not a paid Apple Developer
-and Apple charges $100/year to bypass this requirement.
+1. Open **System Settings > Privacy & Security**
+2. Scroll down and click **"Open Anyway"** next to the ICQ26a message
+
+Or run in the terminal:
+```bash
+xattr -d com.apple.quarantine /Applications/ICQ26a.app
+```

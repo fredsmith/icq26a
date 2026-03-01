@@ -15,5 +15,14 @@ cask "icq26a" do
   homepage "https://github.com/fredsmith/icq26a"
 
   app "ICQ26a.app"
+
+  caveats <<~EOS
+    #{token} is not signed with an Apple Developer certificate.
+    On first launch, macOS Gatekeeper will block it. To allow it:
+      System Settings > Privacy & Security > scroll down > click "Open Anyway"
+    Or run:
+      xattr -d com.apple.quarantine /Applications/ICQ26a.app
+  EOS
+
   zap trash: ["~/Library/Application Support/com.icq26a.app"]
 end
